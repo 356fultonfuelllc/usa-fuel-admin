@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Admin | USA Fuel &amp; Mart</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,100..125,400..900;1,100..125,700..900&amp;display=swap">
+  <link rel="stylesheet" href="admin.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar no-print">
+      <a class="sidebar__brand" href="#/">
+        <img src="assets/logo.webp" alt="USA Fuel &amp; Mart" width="960" height="251">
+        <span>Admin</span>
+      </a>
+      <nav class="sidebar__nav" aria-label="Admin">
+        <a href="#/" data-nav="home">Overview</a>
+        <a href="#/day" data-nav="day">Enter a day</a>
+        <a href="#/days" data-nav="days">Daily reports</a>
+        <a href="#/recon" data-nav="recon">10-day reconciliation</a>
+        <span class="nav__group">Money</span>
+        <a href="#/fuel" data-nav="fuel">Fuel prices &amp; margin</a>
+        <a href="#/deposits" data-nav="deposits">Bank deposits</a>
+        <a href="#/accounts" data-nav="accounts">House accounts</a>
+        <span class="nav__group">Store</span>
+        <a href="#/website" data-nav="website">Website</a>
+        <a href="#/settings" data-nav="settings">Settings</a>
+      </nav>
+      <p class="sidebar__note">Prototype: data is saved in this browser only.</p>
+      <div class="sidebar__account">
+        <span data-user></span>
+        <button class="btn btn--small sidebar__signout" type="button" data-sign-out>Sign out</button>
+      </div>
+    </aside>
+    <main class="main" id="view" tabindex="-1">
+      <p class="empty">Loading…</p>
+    </main>
+  </div>
+  <div class="toast" role="status" aria-live="polite" data-toast></div>
+</body>
+</html>

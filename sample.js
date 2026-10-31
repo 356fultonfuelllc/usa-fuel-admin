@@ -57,6 +57,8 @@ export function makeSample(settings, from, to) {
       // Prices go up a nickel on day 8, matching the sample price log.
       fuel[grade] = { gallons: g, amount: money(g * (prices[grade] + (i >= 7 ? 0.05 : 0))) };
     }
+    if (i % 5 === 3) fuel.manual = money(between(10, 40));
+    const driveOffs = i === 6 ? { amount: 41.25, gallons: 10.05 } : {};
 
     const departments = {
       grocery: money(between(500, 800)),
@@ -70,27 +72,46 @@ export function makeSample(settings, from, to) {
       other: money(between(30, 100)),
     };
     const inside = Object.values(departments).reduce((a, b) => a + b, 0);
+    departments.bottleDeposits = money(between(5, 25));
     const tax = money((inside - departments.grocery * 0.4) * 0.08625);
-    const lottery = { instant: money(between(400, 800)), online: money(between(200, 500)), payouts: money(between(250, 650)) };
-    const fuelAmount = Object.values(fuel).reduce((a, f) => a + f.amount, 0);
-    const totalSales = fuelAmount + inside + lottery.instant + lottery.online + tax;
+    const lottery = { instant: money(between(400, 800)), online: money(between(200, 500)) };
+    const lotteryPayouts = money(between(250, 650));
+    const fuelAmount = Object.values(fuel).reduce((a, f) => a + (typeof f === 'number' ? f : f.amount), 0);
+    const totalSales = money(fuelAmount + inside + lottery.instant + lottery.online + tax);
 
     const tenders = {
       cash: money(totalSales * between(0.3, 0.36)),
       debit: money(totalSales * between(0.12, 0.16)),
       fleet: money(totalSales * between(0.04, 0.08)),
       house: money(totalSales * between(0.01, 0.03)),
-      other: 0,
+      giftCard: i % 4 === 1 ? money(between(10, 50)) : 0,
     };
-    tenders.credit = money(totalSales - tenders.cash - tenders.debit - tenders.fleet - tenders.house);
+    const openPrepays = i === 2 ? 40 : 0;
+    // Payments balance with sales + pass-through, less drive-offs, plus prepays still open.
+    tenders.credit = money(totalSales + departments.bottleDeposits - (driveOffs.amount || 0) + openPrepays
+      - tenders.cash - tenders.debit - tenders.fleet - tenders.house - tenders.giftCard);
+    const tenderTotal = Object.values(tenders).reduce((a, b) => a + b, 0);
 
-    const cash = { startingBank: 300, payIns: 0, payOuts: rand() < 0.4 ? 0 : money(between(40, 180)), cashBack: money(between(40, 120)) };
-    const expected = cash.startingBank + tenders.cash + cash.payIns - cash.payOuts - lottery.payouts - cash.cashBack;
+    const startingBank = 300;
+    const cash = { payIns: 0, payOuts: money((rand() < 0.4 ? 0 : between(40, 180)) + lotteryPayouts), cashBack: money(between(40, 120)) };
+    const expected = startingBank + tenders.cash + cash.payIns - cash.payOuts - cash.cashBack;
     const miss = i === 8 ? -18.4 : money(between(-2, 2));
     cash.counted = money(expected + miss);
-    cash.deposit = money(cash.counted - cash.startingBank);
+    cash.safeDrops = money(Math.floor((cash.counted - startingBank) / 100) * 100);
+    cash.deposit = money(cash.counted - startingBank);
+    const register = {
+      batchTotal: money(tenders.credit + tenders.debit + tenders.fleet),
+      openPrepays,
+      totalSales,
+      totalPayments: money(tenderTotal + (driveOffs.amount || 0) - openPrepays),
+    };
+    const cashiers = [
+      { name: 'Morning', safeDrops: money(cash.safeDrops * 0.45), overShort: money(miss / 2), voids: String(Math.round(between(0, 4))), refunds: money(between(0, 20)), noSales: String(Math.round(between(2, 9))) },
+      { name: 'Evening', safeDrops: money(cash.safeDrops * 0.55), overShort: money(miss / 2), voids: String(Math.round(between(0, 4))), refunds: money(between(0, 20)), noSales: String(Math.round(between(2, 9))) },
+    ];
+    const counts = { noSales: String(Number(cashiers[0].noSales) + Number(cashiers[1].noSales)), voids: String(Number(cashiers[0].voids) + Number(cashiers[1].voids)), refunds: money(cashiers[0].refunds + cashiers[1].refunds) };
 
-    const day = { date, sample: true, preparedBy: 'Sample', fuel, departments, lottery, tax, customers: Math.round(between(360, 480)), tenders, cash, tanks: {}, notes: '' };
+    const day = { date, sample: true, preparedBy: 'Sample', fuel, driveOffs, departments, lottery, tax, customers: Math.round(between(360, 480)), counts, tenders, register, cash, cashiers, tanks: {}, notes: '' };
     const deliveries = [];
 
     for (const tank of settings.tanks) {
@@ -109,10 +130,14 @@ export function makeSample(settings, from, to) {
       water[tank.key] = Math.max(0, Math.round((water[tank.key] + between(-0.02, 0.02)) * 100) / 100);
       day.tanks[tank.key] = {
         time: '22:10',
-        ...(i === 0 ? { start } : {}),
-        delivered,
-        ...(delivered ? { cost: (SAMPLE_COSTS[tank.role] + between(-0.04, 0.04)).toFixed(4) } : {}),
-        ticket,
+        start: String(start),
+        // The TLS usually measures a little less than the invoice; one premium drop comes up short.
+        deliveries: delivered ? [{
+          invoiceGallons: String(delivered),
+          measured: String(delivered - Math.round(tank.key === 't2' && i > 10 ? 60 : between(0, 15))),
+          cost: (SAMPLE_COSTS[tank.role] + between(-0.04, 0.04)).toFixed(4),
+          ticket,
+        }] : [],
         endGallons: end,
         endInches: inchesFor(end, tank.capacity),
         water: water[tank.key],

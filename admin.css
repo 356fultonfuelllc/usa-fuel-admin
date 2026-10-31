@@ -336,6 +336,54 @@ img { display: block; max-width: 100%; }
 .dept { display: flex; align-items: flex-end; gap: 8px; }
 .dept .fld { flex: 1; }
 
+/* Entry: extra rows under a card's main fields */
+.entry__tip { margin: 0 0 12px; font-size: .88rem; }
+.fields--after { margin-top: 16px; }
+.card__sub { margin: 20px 0 10px; color: var(--navy); font-size: .9rem; font-weight: 800; }
+
+/* Deliveries inside a tank card */
+.deliveries { display: grid; gap: 10px; margin: 14px 0 10px; }
+.deliveries:empty { display: none; }
+.delivery { padding: 12px 14px; border-radius: 10px; background: var(--bg); }
+.delivery__title { margin: 0 0 8px; color: var(--navy); font-size: .82rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.delivery .btn { margin-top: 10px; }
+.tank__end { margin-top: 14px; }
+
+/* Rows of fields with a Remove button: cashiers, sales groups, payment types, dept mapping */
+.cashiers,
+.group-list,
+.map-list { display: grid; gap: 10px; margin-bottom: 12px; }
+.cashiers:empty { display: none; }
+.cashier-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); align-items: end; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.cashier-row .btn { justify-self: start; }
+.group-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; align-items: end; gap: 10px; }
+.group-list .group-row:has(> :nth-child(2):last-child) { grid-template-columns: minmax(0, 1fr) auto; }
+.map-row { display: grid; grid-template-columns: 90px minmax(0, 1.4fr) minmax(0, 1.8fr) 96px auto; align-items: end; gap: 10px; }
+.map-row__type { padding-bottom: 11px; color: var(--muted); font-size: .85rem; font-weight: 600; }
+@media (max-width: 899.98px) {
+  .map-row { grid-template-columns: 90px minmax(0, 1fr); }
+  .map-row > :nth-child(3) { grid-column: 1 / -1; }
+  .map-row .btn { justify-self: start; }
+}
+@media (max-width: 559.98px) {
+  .group-row { grid-template-columns: minmax(0, 1fr); }
+  .group-row .btn { justify-self: start; }
+}
+
+/* Checks: both numbers, the difference, red when outside tolerance */
+.check-list { display: grid; gap: 8px; margin: 0 0 6px; padding: 0; list-style: none; }
+.check-row { padding: 8px 10px; border-left: 3px solid var(--line); border-radius: 6px; background: var(--bg); }
+.check-row.is-bad { border-left-color: var(--bad-ink); background: var(--bad-bg); }
+.check-row__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
+.check-row p { margin: 3px 0 0; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.is-bad-text { color: var(--bad-ink); font-weight: 800; }
+.mini-table { width: 100%; border-collapse: collapse; font-size: .88rem; font-variant-numeric: tabular-nums; }
+.mini-table th,
+.mini-table td { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: left; }
+.mini-table thead th { color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.mini-table .num { text-align: right; }
+.table--checks tr.is-bad td { background: var(--bad-bg); color: var(--bad-ink); font-weight: 700; }
+
 /* Entry page: form + live summary */
 .entry { display: grid; gap: 18px; align-items: start; }
 @media (min-width: 1100px) {
@@ -569,6 +617,10 @@ img { display: block; max-width: 100%; }
   .table--report td { padding: 2px 6px; }
   .table--report td:first-child { white-space: nowrap; }
   .report__foot { margin-top: 10px; }
+  .table--checks tr.is-bad td { background: none; text-decoration: underline; }
+  .table--checks td { padding: 1px 6px; line-height: 1.25; }
+  .table--checks br { display: none; }
+  .table--checks .muted { margin-left: 4px; font-size: .9em; }
 
   /* House account statement */
   .statement__top { grid-template-columns: 1fr 300px; margin: 12px 0 14px; }

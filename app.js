@@ -5,7 +5,7 @@ import * as calc from './calc.js';
 import { makeSample, makeSampleExtras, SAMPLE_START_COSTS } from './sample.js';
 import {
   usd, fmt, longDate, mediumDate, shortDate, slashDate, periodLabel, esc, getPath, setPath,
-  pill, toast, field, attempt, statTile, deltaLine,
+  pill, toast, field, selectField, attempt, statTile, deltaLine,
 } from './ui.js';
 import { renderFuel } from './pages/fuel.js';
 import { renderDeposits } from './pages/deposits.js';
@@ -44,16 +44,6 @@ function cashStatus(summary) {
 function paymentsStatus(summary) {
   if (summary.tenderTotal === 0) return pill('idle', 'Not entered');
   return summary.paymentsFlag ? pill('warn', `Off by ${usd.format(Math.abs(summary.salesVsPayments))}`) : pill('good', 'Balanced');
-}
-
-// The register's house-account total for a day vs the charges recorded on accounts.
-function houseCheck(date, day) {
-  const rungUp = Number(day.tenders?.house) || 0;
-  const recorded = calc.houseChargesOn(date, extra.house_charges);
-  if (!rungUp && !recorded) return '';
-  const tone = Math.abs(rungUp - recorded) < 0.01 ? pill('good', 'Matches') : pill('warn', `Off by ${usd.format(Math.abs(rungUp - recorded))}`);
-  return `<div><span>House charges</span>${tone}</div>
-    <p class="muted">Register ${fmt.money(rungUp)} · recorded on accounts ${fmt.money(recorded)}. <a href="#/accounts">House accounts</a></p>`;
 }
 
 function periodStatus(result) {
@@ -268,6 +258,7 @@ function windowTotals(from, to) {
   const sum = (key) => list.reduce((a, s) => a + (s[key] ?? 0), 0);
   return {
     count: list.length,
+    cashCounted: list.filter((x) => x.overShort != null).length,
     fuelGallons: sum('fuelGallons'),
     totalSales: sum('totalSales'),
     insideAmount: sum('insideAmount'),
@@ -311,10 +302,14 @@ function attentionItems(today) {
     if (dep.state === 'overdue') items.push(['warn', `The ${usd.format(dep.amount)} from ${mediumDate(d)} hasn't been deposited.`, link, 'Deposits']);
     if (dep.state === 'late') items.push(['warn', `The ${mediumDate(d)} deposit of ${usd.format(dep.amount)} hasn't cleared the bank.`, link, 'Deposits']);
     if (dep.state === 'mismatch') items.push(['bad', `The bank shows ${usd.format(dep.clearedAmount)} for the ${mediumDate(d)} deposit of ${usd.format(dep.amount)}.`, link, 'Deposits']);
-    const rungUp = Number(days[d].tenders?.house) || 0;
-    const recorded = calc.houseChargesOn(d, extra.house_charges);
-    if ((rungUp || recorded) && Math.abs(rungUp - recorded) >= 0.01 && d >= calc.addDays(today, -14)) {
-      items.push(['warn', `House charges for ${mediumDate(d)} don't match the register (${usd.format(recorded)} recorded, ${usd.format(rungUp)} rung up).`, '#/accounts', 'Accounts']);
+    // Other checks that failed in the last 14 days (cash and sales vs payments are listed above).
+    if (d >= calc.addDays(today, -14)) {
+      for (const c of calc.dayChecks(d, days, settings, { houseCharges: calc.houseChargesOn(d, extra.house_charges) })) {
+        if (!c.available || c.ok || c.key === 'cash' || c.key === 'payments') continue;
+        const diff = c.unit === 'money' ? usd.format(Math.abs(c.diff)) : `${fmt.number(Math.abs(c.diff))} gal`;
+        const link = c.key === 'house' ? '#/accounts' : `#/day/${d}`;
+        items.push([c.key.startsWith('delivery') || c.key.startsWith('tank') ? 'bad' : 'warn', `${c.label} is off by ${diff} on ${mediumDate(d)} (${c.a[0].toLowerCase()} vs ${c.b[0].toLowerCase()}).`, link, c.key === 'house' ? 'Accounts' : 'Check entry']);
+      }
     }
   }
   for (const account of extra.house_accounts) {
@@ -342,11 +337,11 @@ function renderHome() {
     tiles = `<div class="tiles tiles--5">
       ${statTile('Total sales', fmt.moneyCompact(current.totalSales), deltaLine(current.totalSales, comparable?.totalSales))}
       ${statTile('Fuel gallons', fmt.number(current.fuelGallons), deltaLine(current.fuelGallons, comparable?.fuelGallons))}
-      ${statTile('Fuel profit', fuelProfit == null ? '—' : fmt.moneyCompact(fuelProfit), '', fuelProfit == null ? 'Add delivery costs to see it' : `${fmt.cents(fuelProfit / (current.fuelGallons || 1))} a gallon`)}
+      ${statTile('Fuel profit', fuelProfit == null ? '—' : fmt.moneyCompact(fuelProfit), '', fuelProfit == null ? (current.fuelGallons ? 'Add fuel costs in Settings or on deliveries' : 'No fuel sales entered yet') : `${fmt.cents(fuelProfit / (current.fuelGallons || 1))} a gallon`)}
       ${statTile('Inside sales', fmt.moneyCompact(current.insideAmount), deltaLine(current.insideAmount, comparable?.insideAmount))}
-      ${statTile('Cash over/short', fmt.signedMoney(Math.round(current.overShort * 100) / 100), '', `${current.count} days counted`)}
+      ${statTile('Cash over/short', current.cashCounted ? fmt.signedMoney(Math.round(current.overShort * 100) / 100) : '—', '', `${current.cashCounted} of ${current.count} ${current.count === 1 ? 'day' : 'days'} counted`)}
     </div>
-    <p class="muted">Last 7 days entered: ${shortDate(from)} – ${shortDate(latest)}.</p>`;
+    <p class="muted">${current.count === 1 ? `1 day entered: ${shortDate(latest)}.` : `${current.count} days entered between ${shortDate(from)} and ${shortDate(latest)}.`}</p>`;
   }
 
   const periodStart = calc.periodStartFor(today, settings);
@@ -404,38 +399,108 @@ function blankDay(date) {
     date,
     preparedBy: previous?.preparedBy || '',
     fuel: {},
+    driveOffs: {},
     departments: {},
     lottery: {},
     tax: '',
     customers: '',
+    counts: {},
     tenders: {},
-    cash: { startingBank: previous?.cash?.startingBank ?? '' },
-    tanks: Object.fromEntries(settings.tanks.map((t) => [t.key, { time: previous?.tanks?.[t.key]?.time || '' }])),
+    register: {},
+    cash: {},
+    cashiers: [],
+    // Start inventory is filled in from yesterday's ending volume; it can be changed.
+    tanks: Object.fromEntries(settings.tanks.map((t) => {
+      const end = calc.endVolume(previous?.tanks?.[t.key], settings);
+      return [t.key, { time: previous?.tanks?.[t.key]?.time || '', start: end == null ? '' : String(end), deliveries: [] }];
+    })),
     notes: '',
   };
 }
 
+// Older days stored one delivery per tank as delivered/cost/ticket; edit them as a list.
+function upgradeDraft(draft) {
+  draft.cashiers ||= [];
+  for (const tank of settings.tanks) {
+    const reading = (draft.tanks ||= {})[tank.key] ||= {};
+    if (!Array.isArray(reading.deliveries)) {
+      reading.deliveries = calc.deliveriesOf(reading).map((d) => ({ ...d }));
+      delete reading.delivered;
+      delete reading.cost;
+      delete reading.ticket;
+    }
+  }
+  return draft;
+}
+
+const signedMoneyOrGal = (v, unit) => (unit === 'money' ? fmt.signedMoney(v) : `${fmt.signed(v)} gal`);
+const moneyOrGal = (v, unit) => (unit === 'money' ? fmt.money(v) : `${fmt.number(v)} gal`);
+
+// One line per check: the two numbers, the difference, and red when outside tolerance.
+function checkRows(checks) {
+  if (!checks.length) return '<p class="muted">Checks appear as you enter numbers.</p>';
+  return `<ul class="check-list">${checks.map((c) => `<li class="check-row${c.available && !c.ok ? ' is-bad' : ''}">
+    <div class="check-row__head"><span>${esc(c.label)}</span>${!c.available ? pill('idle', 'Waiting') : c.ok ? pill('good', c.diff ? signedMoneyOrGal(c.diff, c.unit) : 'Matches') : pill('bad', signedMoneyOrGal(c.diff, c.unit))}</div>
+    <p>${esc(c.a[0])} ${moneyOrGal(c.a[1], c.unit)} · ${esc(c.b[0])} ${c.b[1] == null ? '—' : moneyOrGal(c.b[1], c.unit)}${c.available ? ` · difference ${signedMoneyOrGal(c.diff, c.unit)}` : ''}</p>
+    ${c.note ? `<p class="muted">${esc(c.note)}</p>` : ''}
+  </li>`).join('')}</ul>`;
+}
+
+const deptHint = (target, extraText = '') => {
+  const list = calc.deptsFor(target, settings).map((m) => [m.number, m.name].filter(Boolean).join(' ')).join(', ');
+  return [list ? `Commander ${list}` : '', extraText].filter(Boolean).join('. ');
+};
+
+function deliveryRows(tank, deliveries) {
+  const base = `tanks.${tank.key}.deliveries`;
+  return deliveries.map((d, i) => `<div class="delivery" data-delivery="${i}">
+    <p class="delivery__title">Delivery ${i + 1}</p>
+    <div class="fields fields--tank">
+      ${field({ name: `${base}.${i}.invoiceGallons`, label: 'Invoice gallons', suffix: 'gal', value: d.invoiceGallons })}
+      ${field({ name: `${base}.${i}.measured`, label: 'TLS measured increase', suffix: 'gal', value: d.measured, hint: 'TLS-350 delivery report' })}
+      ${field({ name: `${base}.${i}.cost`, label: 'Landed cost / gal', prefix: '$', value: d.cost, hint: 'Incl. taxes and freight' })}
+      ${field({ name: `${base}.${i}.ticket`, label: 'Ticket / BOL #', type: 'text', value: d.ticket })}
+    </div>
+    <button class="btn btn--ghost btn--small" type="button" data-remove-delivery="${tank.key}:${i}">Remove delivery</button>
+  </div>`).join('');
+}
+
+function cashierRows(cashiers) {
+  return cashiers.map((c, i) => `<div class="cashier-row" data-cashier="${i}">
+    ${field({ name: `cashiers.${i}.name`, label: 'Cashier', type: 'text', value: c.name })}
+    ${field({ name: `cashiers.${i}.safeDrops`, label: 'Safe drops', prefix: '$', value: c.safeDrops })}
+    ${field({ name: `cashiers.${i}.overShort`, label: 'Over/short', prefix: '$', value: c.overShort })}
+    ${field({ name: `cashiers.${i}.voids`, label: 'Voids', value: c.voids })}
+    ${field({ name: `cashiers.${i}.refunds`, label: 'Refunds', prefix: '$', value: c.refunds })}
+    ${field({ name: `cashiers.${i}.noSales`, label: 'No-sales', value: c.noSales })}
+    <button class="btn btn--ghost btn--small" type="button" data-remove-cashier="${i}" aria-label="Remove cashier ${i + 1}">Remove</button>
+  </div>`).join('');
+}
 
 function renderEntry(dateParam) {
   const date = dateParam || calc.todayInNewYork();
   const exists = Boolean(days[date]);
-  const draft = exists ? structuredClone(days[date]) : blankDay(date);
+  const draft = upgradeDraft(exists ? structuredClone(days[date]) : blankDay(date));
   const value = (path) => getPath(draft, path);
-  const previousDay = days[calc.addDays(date, -1)];
+  const tc = settings.volumeBasis === 'tc';
+  const endKey = tc ? 'endTc' : 'endGallons';
+  const inside = settings.departments.filter((d) => (d.type || 'inside') === 'inside');
+  const passthrough = settings.departments.filter((d) => d.type === 'passthrough');
+  const tenders = calc.tenderTypes(settings, draft);
 
   const tankCards = settings.tanks.map((tank) => {
-    const carried = previousDay?.tanks?.[tank.key]?.endGallons;
     const base = `tanks.${tank.key}`;
     return `<fieldset class="tank">
       <legend>${esc(tank.product)} <span class="muted">Tank ${esc(tank.tankId)} · ${fmt.number(tank.capacity)} gal</span></legend>
       <div class="fields fields--tank">
         ${field({ name: `${base}.time`, label: 'Reading time', type: 'time', value: value(`${base}.time`) })}
-        ${field({ name: `${base}.start`, label: 'Start inventory', suffix: 'gal', value: value(`${base}.start`), placeholder: carried != null ? fmt.number(Number(carried)) : 'Required', hint: carried != null ? "Blank uses yesterday's end" : 'No reading saved for yesterday' })}
-        ${field({ name: `${base}.delivered`, label: 'Gallons delivered', suffix: 'gal', value: value(`${base}.delivered`), placeholder: '0' })}
-        ${field({ name: `${base}.cost`, label: 'Cost per gallon', prefix: '$', value: value(`${base}.cost`), hint: 'All-in, from the delivery invoice' })}
-        ${field({ name: `${base}.ticket`, label: 'Delivery ticket #', type: 'text', value: value(`${base}.ticket`) })}
-        ${field({ name: `${base}.endInches`, label: 'End height', suffix: 'in', value: value(`${base}.endInches`), hint: 'TLS-350 inventory: Height' })}
-        ${field({ name: `${base}.endGallons`, label: 'End inventory', suffix: 'gal', value: value(`${base}.endGallons`), hint: 'TLS-350 inventory: Volume' })}
+        ${field({ name: `${base}.start`, label: 'Start inventory', suffix: 'gal', value: value(`${base}.start`), placeholder: 'Required', hint: "Filled from yesterday's end" })}
+      </div>
+      <div class="deliveries" data-deliveries="${tank.key}">${deliveryRows(tank, value(`${base}.deliveries`))}</div>
+      <button class="btn btn--ghost btn--small" type="button" data-add-delivery="${tank.key}">Add delivery</button>
+      <div class="fields fields--tank tank__end">
+        ${field({ name: `${base}.${endKey}`, label: tc ? 'End volume (TC)' : 'End volume (gross)', suffix: 'gal', value: value(`${base}.${endKey}`), hint: tc ? 'TLS-350 inventory: TC Volume' : 'TLS-350 inventory: Volume' })}
+        ${field({ name: `${base}.endInches`, label: 'End height (optional)', suffix: 'in', value: value(`${base}.endInches`) })}
         ${field({ name: `${base}.water`, label: 'Water', suffix: 'in', value: value(`${base}.water`), hint: 'TLS-350 inventory: Water' })}
         ${field({ name: `${base}.pumped`, label: 'Gallons pumped', suffix: 'gal', value: value(`${base}.pumped`), hint: 'Blank uses fuel sales' })}
       </div>
@@ -455,6 +520,7 @@ function renderEntry(dateParam) {
 
     <div class="entry">
       <form class="entry__form" data-entry-form novalidate>
+        <p class="muted entry__tip">Tab or Enter moves to the next box. Enter on the last box saves the day.</p>
         <section class="card">
           <h2 class="card__title">Fuel sales</h2>
           <p class="card__hint">From the Commander fuel report, by grade.</p>
@@ -465,50 +531,83 @@ function renderEntry(dateParam) {
               ${field({ name: `fuel.${g.key}.gallons`, label: `${g.label} gallons`, suffix: 'gal', value: value(`fuel.${g.key}.gallons`) })}
               ${field({ name: `fuel.${g.key}.amount`, label: `${g.label} sales`, prefix: '$', value: value(`fuel.${g.key}.amount`) })}`).join('')}
           </div>
-        </section>
-
-        <section class="card">
-          <h2 class="card__title">Inside sales by department</h2>
-          <p class="card__hint">From the Commander department report. Before tax.</p>
-          <div class="fields">
-            ${settings.departments.map((d) => field({ name: `departments.${d.key}`, label: d.label, prefix: '$', value: value(`departments.${d.key}`) })).join('')}
+          <div class="fields fields--after">
+            ${field({ name: 'fuel.manual', label: 'Manual fuel sales', prefix: '$', value: value('fuel.manual'), hint: deptHint('manualFuel') || 'Commander dept 9998' })}
+            ${field({ name: 'driveOffs.amount', label: 'Drive-offs', prefix: '$', value: value('driveOffs.amount') })}
+            ${field({ name: 'driveOffs.gallons', label: 'Drive-off gallons', suffix: 'gal', value: value('driveOffs.gallons') })}
           </div>
         </section>
 
         <section class="card">
-          <h2 class="card__title">Lottery, tax and customers</h2>
+          <h2 class="card__title">Inside sales</h2>
+          <p class="card__hint">From the Commander department report. Before tax. Fuel departments and dept 9998 never go here.</p>
           <div class="fields">
-            ${field({ name: 'lottery.instant', label: 'Scratch-off sales', prefix: '$', value: value('lottery.instant') })}
-            ${field({ name: 'lottery.online', label: 'Draw game sales', prefix: '$', value: value('lottery.online') })}
-            ${field({ name: 'lottery.payouts', label: 'Paid to lottery winners', prefix: '$', value: value('lottery.payouts'), hint: 'If Commander records these as a Pay Out, leave this at 0.' })}
+            ${inside.map((d) => field({ name: `departments.${d.key}`, label: d.label, prefix: '$', value: value(`departments.${d.key}`), hint: deptHint(d.key) })).join('')}
+          </div>
+        </section>
+
+        ${passthrough.length ? `<section class="card">
+          <h2 class="card__title">Pass-through</h2>
+          <p class="card__hint">Money collected that isn't a sale. Not counted in sales, but included when balancing against payments.</p>
+          <div class="fields">
+            ${passthrough.map((d) => field({ name: `departments.${d.key}`, label: d.label, prefix: '$', value: value(`departments.${d.key}`), hint: deptHint(d.key) })).join('')}
+          </div>
+        </section>` : ''}
+
+        <section class="card">
+          <h2 class="card__title">Lottery</h2>
+          <div class="fields">
+            ${field({ name: 'lottery.instant', label: 'Scratch-off sales', prefix: '$', value: value('lottery.instant'), hint: deptHint('lottery:instant') })}
+            ${field({ name: 'lottery.online', label: 'Draw game sales', prefix: '$', value: value('lottery.online'), hint: deptHint('lottery:online') })}
+          </div>
+          ${Number(value('lottery.payouts')) ? `<p class="muted">This day was entered before the change: ${fmt.money(Number(value('lottery.payouts')))} paid to winners is still taken out of expected cash.</p>` : ''}
+        </section>
+
+        <section class="card">
+          <h2 class="card__title">Tax and counts</h2>
+          <div class="fields">
             ${field({ name: 'tax', label: 'Sales tax collected', prefix: '$', value: value('tax') })}
             ${field({ name: 'customers', label: 'Customer count', value: value('customers') })}
+            ${field({ name: 'counts.noSales', label: 'No-sale count', value: value('counts.noSales') })}
+            ${field({ name: 'counts.voids', label: 'Void count', value: value('counts.voids') })}
+            ${field({ name: 'counts.refunds', label: 'Refunds', prefix: '$', value: value('counts.refunds') })}
           </div>
         </section>
 
         <section class="card">
-          <h2 class="card__title">Payments by type</h2>
-          <p class="card__hint">From the Commander summary, by method of payment.</p>
+          <h2 class="card__title">Payments</h2>
+          <p class="card__hint">From the Commander summary, by method of payment. Every amount is net, after refunds.</p>
           <div class="fields">
-            ${calc.TENDERS.map((t) => field({ name: `tenders.${t.key}`, label: t.label, prefix: '$', value: value(`tenders.${t.key}`), hint: t.hint })).join('')}
+            ${tenders.map((t) => field({ name: `tenders.${t.key}`, label: `${t.label} (net)`, prefix: '$', value: value(`tenders.${t.key}`), hint: t.hint })).join('')}
+          </div>
+          <h3 class="card__sub">From the register reports</h3>
+          <div class="fields">
+            ${field({ name: 'register.batchTotal', label: 'Card network batch total', prefix: '$', value: value('register.batchTotal') })}
+            ${field({ name: 'register.openPrepays', label: 'Open prepays at close', prefix: '$', value: value('register.openPrepays') })}
+            ${field({ name: 'register.totalSales', label: 'Commander total sales', prefix: '$', value: value('register.totalSales'), hint: 'Copied from the report, for the cross-check' })}
+            ${field({ name: 'register.totalPayments', label: 'Commander total payments', prefix: '$', value: value('register.totalPayments'), hint: 'Copied from the report, for the cross-check' })}
           </div>
         </section>
 
         <section class="card">
           <h2 class="card__title">Cash</h2>
           <div class="fields">
-            ${field({ name: 'cash.startingBank', label: 'Starting bank', prefix: '$', value: value('cash.startingBank') })}
+            ${field({ name: 'cash.startingBank', label: 'Starting bank', prefix: '$', value: value('cash.startingBank'), placeholder: settings.startingBank === '' ? 'Set in Settings' : String(settings.startingBank), hint: 'From Settings. Type only to override today.' })}
             ${field({ name: 'cash.payIns', label: 'Pay ins', prefix: '$', value: value('cash.payIns') })}
-            ${field({ name: 'cash.payOuts', label: 'Pay outs', prefix: '$', value: value('cash.payOuts'), hint: 'Vendors and other cash paid out' })}
-            ${field({ name: 'cash.cashBack', label: 'Debit cash back', prefix: '$', value: value('cash.cashBack') })}
+            ${field({ name: 'cash.payOuts', label: 'Pay outs', prefix: '$', value: value('cash.payOuts'), hint: 'Vendors, lottery winners and other cash paid out' })}
+            ${field({ name: 'cash.cashBack', label: 'Debit cash back', prefix: '$', value: value('cash.cashBack'), hint: settings.cashBackNetted ? 'Not subtracted: Settings says the cash total already has it taken out' : '' })}
+            ${field({ name: 'cash.safeDrops', label: 'Safe drops total', prefix: '$', value: value('cash.safeDrops') })}
             ${field({ name: 'cash.counted', label: 'Cash counted', prefix: '$', value: value('cash.counted'), hint: 'Drawer plus all safe drops' })}
             ${field({ name: 'cash.deposit', label: 'Bank deposit', prefix: '$', value: value('cash.deposit') })}
           </div>
+          <h3 class="card__sub">By cashier</h3>
+          <div class="cashiers" data-cashiers>${cashierRows(draft.cashiers)}</div>
+          <button class="btn btn--ghost btn--small" type="button" data-add-cashier>Add cashier</button>
         </section>
 
         <section class="card">
           <h2 class="card__title">Tank readings</h2>
-          <p class="card__hint">From the Veeder-Root TLS-350 inventory report at close, plus any delivery tickets.</p>
+          <p class="card__hint">From the Veeder-Root TLS-350 inventory report at close, plus any delivery tickets. Using ${tc ? 'temperature-corrected' : 'gross'} volume (change in Settings).</p>
           ${tankCards}
         </section>
 
@@ -534,17 +633,24 @@ function renderEntry(dateParam) {
   const summaryBox = view.querySelector('[data-entry-summary]');
   const status = view.querySelector('[data-save-status]');
 
+  const markUnsaved = () => {
+    unsaved = true;
+    status.textContent = 'Unsaved changes';
+    status.classList.add('is-unsaved');
+  };
+
   function refresh() {
     const s = calc.summarizeDay(draft, settings);
     const merged = { ...days, [date]: draft };
-    const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, merged, settings)]);
+    const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, merged, settings), calc.tankRunning(date, tank, merged, settings)]);
+    const checks = calc.dayChecks(date, merged, settings, { houseCharges: calc.houseChargesOn(date, extra.house_charges) });
 
     for (const [tank, line] of lines) {
       view.querySelector(`[name="tanks.${tank.key}.pumped"]`).placeholder = fmt.number(calc.pumpedFromSales(draft, tank, settings));
       const box = view.querySelector(`[data-tank-line="${tank.key}"]`);
       box.innerHTML = line.start == null
         ? 'Enter the start inventory to calculate this tank.'
-        : `Start ${fmt.number(line.start)} + delivered ${fmt.number(line.delivered)} − pumped ${fmt.number(line.pumped)} = book <strong>${fmt.number(line.book)}</strong>${line.end != null ? ` · end ${fmt.number(line.end)} · over/short <strong>${fmt.signed(line.overShort)}</strong>` : ''}${line.waterFlag ? ` ${pill('warn', 'Water rose')}` : ''}`;
+        : `Start ${fmt.number(line.start)} + delivered ${fmt.number(line.delivered)} − pumped ${fmt.number(line.pumped)} = book <strong>${fmt.number(line.book)}</strong>${line.end != null ? ` · end ${fmt.number(line.end)} · over/short <strong class="${line.overFlag ? 'is-bad-text' : ''}">${fmt.signed(line.overShort)}</strong>` : ''}${line.waterFlag ? ` ${pill('warn', 'Water rose')}` : ''}`;
     }
 
     summaryBox.innerHTML = `
@@ -555,33 +661,82 @@ function renderEntry(dateParam) {
         <div><dt>Lottery sales</dt><dd>${fmt.money(s.lotterySales)}</dd></div>
         <div><dt>Sales tax</dt><dd>${fmt.money(s.tax)}</dd></div>
         <div class="summary__total"><dt>Total sales</dt><dd>${fmt.money(s.totalSales)}</dd></div>
+        ${s.passthroughAmount ? `<div><dt>Pass-through</dt><dd>${fmt.money(s.passthroughAmount)}</dd></div>` : ''}
         <div><dt>Payments</dt><dd>${fmt.money(s.tenderTotal)}</dd></div>
       </dl>
-      <div class="checks">
-        <div><span>Sales vs payments</span>${paymentsStatus(s)}</div>
-        <div><span>Cash</span>${cashStatus(s)}</div>
-        ${s.overShort != null ? `<p class="muted">Expected ${fmt.money(s.expectedCash)}, counted ${fmt.money(s.countedCash)}.</p>` : ''}
-        ${houseCheck(date, draft)}
-      </div>
-      <h3 class="summary__sub">Tanks today</h3>
-      <dl class="summary">
-        ${lines.map(([tank, line]) => `<div><dt>${esc(tank.product)}</dt><dd>${line.overShort != null ? `${fmt.signed(line.overShort)} gal` : '—'}</dd></div>`).join('')}
-      </dl>`;
+      <h3 class="summary__sub">Checks</h3>
+      ${checkRows(checks)}
+      <h3 class="summary__sub">Tanks over/short</h3>
+      <table class="mini-table">
+        <thead><tr><th></th><th class="num">Today</th><th class="num">10-day</th><th class="num">Month</th></tr></thead>
+        <tbody>${lines.map(([tank, line, run]) => `<tr>
+          <th>${esc(tank.product.replace(' unleaded', ''))}</th>
+          <td class="num${line.overFlag ? ' is-bad-text' : ''}">${line.overShort != null ? fmt.signed(line.overShort) : '—'}</td>
+          <td class="num">${run.period.counted ? fmt.signed(run.period.value) : '—'}</td>
+          <td class="num">${run.month.counted ? fmt.signed(run.month.value) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <p class="muted">Gallons. Red when a day is off by more than ${fmt.number(Number(settings.thresholds.tankDailyGallons))}.</p>`;
   }
 
   form.addEventListener('input', (event) => {
     const input = event.target;
     if (!input.name) return;
     setPath(draft, input.name, input.value);
-    unsaved = true;
-    status.textContent = 'Unsaved changes';
-    status.classList.add('is-unsaved');
+    markUnsaved();
     refresh();
+  });
+
+  // Enter moves to the next box, like Tab, so a whole day can be typed without the mouse.
+  form.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    const target = event.target;
+    if (target.tagName === 'TEXTAREA' || target.tagName === 'BUTTON' || !target.name) return;
+    event.preventDefault();
+    const boxes = [...form.querySelectorAll('input[name], select[name]')].filter((el) => !el.disabled && el.offsetParent !== null);
+    const next = boxes[boxes.indexOf(target) + 1];
+    if (next) {
+      next.focus();
+      next.select?.();
+    } else {
+      form.requestSubmit();
+    }
+  });
+
+  form.addEventListener('click', (event) => {
+    const add = event.target.closest('[data-add-delivery]');
+    const remove = event.target.closest('[data-remove-delivery]');
+    if (add || remove) {
+      const [key, index] = (add ? add.dataset.addDelivery : remove.dataset.removeDelivery).split(':');
+      const list = draft.tanks[key].deliveries;
+      if (add) list.push({ invoiceGallons: '', measured: '', cost: '', ticket: '' });
+      else list.splice(Number(index), 1);
+      const tank = settings.tanks.find((t) => t.key === key);
+      view.querySelector(`[data-deliveries="${key}"]`).innerHTML = deliveryRows(tank, list);
+      if (add) view.querySelector(`[name="tanks.${key}.deliveries.${list.length - 1}.invoiceGallons"]`).focus();
+      markUnsaved();
+      refresh();
+      return;
+    }
+    const addCashier = event.target.closest('[data-add-cashier]');
+    const removeCashier = event.target.closest('[data-remove-cashier]');
+    if (addCashier || removeCashier) {
+      if (addCashier) draft.cashiers.push({ name: '', safeDrops: '', overShort: '', voids: '', refunds: '', noSales: '' });
+      else draft.cashiers.splice(Number(removeCashier.dataset.removeCashier), 1);
+      view.querySelector('[data-cashiers]').innerHTML = cashierRows(draft.cashiers);
+      if (addCashier) view.querySelector(`[name="cashiers.${draft.cashiers.length - 1}.name"]`).focus();
+      markUnsaved();
+      refresh();
+    }
   });
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     draft.date = date;
+    draft.cashiers = draft.cashiers.filter((c) => Object.values(c).some((v) => String(v ?? '').trim() !== ''));
+    for (const tank of settings.tanks) {
+      draft.tanks[tank.key].deliveries = draft.tanks[tank.key].deliveries.filter((d) => Object.values(d).some((v) => String(v ?? '').trim() !== ''));
+    }
     const button = form.querySelector('[type="submit"]');
     button.disabled = true;
     const saved = await attempt(() => store.saveDay(draft), "Couldn't save this day. Your numbers are still on the screen, so try Save again.");
@@ -660,7 +815,8 @@ function renderReport(date) {
   }
   const s = calc.summarizeDay(day, settings);
   const lastWeek = days[calc.addDays(date, -7)] ? calc.summarizeDay(days[calc.addDays(date, -7)], settings) : null;
-  const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, days, settings)]);
+  const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, days, settings), calc.tankRunning(date, tank, days, settings)]);
+  const checks = calc.dayChecks(date, days, settings, { houseCharges: calc.houseChargesOn(date, extra.house_charges) });
   const dates = sortedDates();
   const index = dates.indexOf(date);
   const prev = dates[index - 1];
@@ -706,8 +862,10 @@ function renderReport(date) {
           <h2>Fuel sales</h2>
           <table class="table table--report">
             <thead><tr><th>Grade</th><th class="num">Gallons</th><th class="num">Sales</th><th class="num">Avg $/gal</th></tr></thead>
-            <tbody>${s.fuel.map((f) => `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td></tr>`).join('')}</tbody>
-            <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th></th></tr></tfoot>
+            <tbody>${s.fuel.map((f) => `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td></tr>`).join('')}
+              ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td></td></tr>` : ''}</tbody>
+            <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th></th></tr>
+              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td></td></tr>` : ''}</tfoot>
           </table>
         </section>
 
@@ -715,7 +873,8 @@ function renderReport(date) {
           <h2>Inside sales</h2>
           <table class="table table--report">
             <tbody>${s.departments.map((d) => `<tr><td>${esc(d.label)}</td><td class="num">${fmt.money(d.amount)}</td></tr>`).join('')}</tbody>
-            <tfoot><tr><th>Total inside</th><th class="num">${fmt.money(s.insideAmount)}</th></tr></tfoot>
+            <tfoot><tr><th>Total inside</th><th class="num">${fmt.money(s.insideAmount)}</th></tr>
+              ${s.passthrough.filter((d) => d.amount).map((d) => `<tr><td>${esc(d.label)} <span class="muted">(pass-through)</span></td><td class="num">${fmt.money(d.amount)}</td></tr>`).join('')}</tfoot>
           </table>
         </section>
 
@@ -732,17 +891,20 @@ function renderReport(date) {
             <tfoot>
               <tr><th>Total sales</th><th class="num">${fmt.money(s.totalSales)}</th></tr>
               <tr><td>Customers · average sale</td><td class="num">${fmt.number(s.customers)} · ${fmt.money(s.averageSale)}</td></tr>
+              <tr><td>No-sales · voids · refunds</td><td class="num">${fmt.number(s.noSales)} · ${fmt.number(s.voids)} · ${fmt.money(s.refunds)}</td></tr>
             </tfoot>
           </table>
         </section>
 
         <section>
-          <h2>Payments</h2>
+          <h2>Payments (net)</h2>
           <table class="table table--report">
             <tbody>${s.tenders.map((t) => `<tr><td>${esc(t.label)}</td><td class="num">${fmt.money(t.amount)}</td></tr>`).join('')}</tbody>
             <tfoot>
               <tr><th>Total payments</th><th class="num">${fmt.money(s.tenderTotal)}</th></tr>
-              <tr><td>Sales vs payments</td><td class="num">${paymentsStatus(s)}</td></tr>
+              ${s.openPrepays ? `<tr><td>Open prepays at close</td><td class="num">${fmt.money(s.openPrepays)}</td></tr>` : ''}
+              <tr><td>Card batch total</td><td class="num">${fmt.money(s.batchTotal)}</td></tr>
+              <tr><td>Commander sales · payments</td><td class="num">${fmt.money(s.commanderSales)} · ${fmt.money(s.commanderPayments)}</td></tr>
             </tfoot>
           </table>
         </section>
@@ -751,16 +913,16 @@ function renderReport(date) {
           <h2>Cash</h2>
           <table class="table table--report">
             <tbody>
-              <tr><td>Starting bank</td><td class="num">${fmt.money(Number(day.cash?.startingBank) || 0)}</td></tr>
+              <tr><td>Starting bank${s.startingBankOverride ? ' (changed today)' : ''}</td><td class="num">${fmt.money(s.startingBank)}</td></tr>
               <tr><td>+ Cash sales</td><td class="num">${fmt.money(s.cashSales)}</td></tr>
-              <tr><td>+ Pay ins</td><td class="num">${fmt.money(Number(day.cash?.payIns) || 0)}</td></tr>
-              <tr><td>− Pay outs</td><td class="num">${fmt.money(Number(day.cash?.payOuts) || 0)}</td></tr>
-              <tr><td>− Lottery winners paid</td><td class="num">${fmt.money(s.lotteryPayouts)}</td></tr>
-              <tr><td>− Debit cash back</td><td class="num">${fmt.money(Number(day.cash?.cashBack) || 0)}</td></tr>
+              <tr><td>+ Pay ins</td><td class="num">${fmt.money(s.payIns)}</td></tr>
+              <tr><td>− Pay outs</td><td class="num">${fmt.money(s.payOuts)}</td></tr>
+              ${s.lotteryPayouts ? `<tr><td>− Lottery winners paid</td><td class="num">${fmt.money(s.lotteryPayouts)}</td></tr>` : ''}
+              <tr><td>− Debit cash back${settings.cashBackNetted ? ' (already netted)' : ''}</td><td class="num">${settings.cashBackNetted ? '—' : fmt.money(s.cashBack)}</td></tr>
             </tbody>
             <tfoot>
               <tr><th>Expected cash</th><th class="num">${fmt.money(s.expectedCash)}</th></tr>
-              <tr><td>Cash counted</td><td class="num">${fmt.money(s.countedCash)}</td></tr>
+              <tr><td>Cash counted${s.safeDrops != null ? ` (safe drops ${fmt.money(s.safeDrops)})` : ''}</td><td class="num">${fmt.money(s.countedCash)}</td></tr>
               <tr><th>Over/short</th><th class="num">${fmt.signedMoney(s.overShort)}</th></tr>
               <tr><td>Bank deposit</td><td class="num">${fmt.money(s.deposit)}</td></tr>
             </tfoot>
@@ -768,22 +930,29 @@ function renderReport(date) {
         </section>
 
         <section>
-          <h2>Lottery</h2>
-          <table class="table table--report">
-            <tbody>
-              <tr><td>Lottery sales</td><td class="num">${fmt.money(s.lotterySales)}</td></tr>
-              <tr><td>Paid to winners</td><td class="num">${fmt.money(s.lotteryPayouts)}</td></tr>
-            </tbody>
-            <tfoot><tr><th>Net lottery</th><th class="num">${fmt.money(s.lotteryNet)}</th></tr></tfoot>
+          <h2>Checks</h2>
+          <table class="table table--report table--checks">
+            <tbody>${checks.length ? checks.map((c) => `<tr class="${c.available && !c.ok ? 'is-bad' : ''}">
+              <td>${esc(c.label)}<br><span class="muted">${moneyOrGal(c.a[1], c.unit)} vs ${c.b[1] == null ? '—' : moneyOrGal(c.b[1], c.unit)}</span></td>
+              <td class="num">${c.available ? (c.ok && !c.diff ? 'OK' : signedMoneyOrGal(c.diff, c.unit)) : '—'}</td>
+            </tr>`).join('') : '<tr><td colspan="2" class="muted">Nothing to check yet.</td></tr>'}</tbody>
           </table>
         </section>
+
+        ${s.cashiers.length ? `<section class="report-grid__wide">
+          <h2>By cashier</h2>
+          <div class="table-wrap"><table class="table table--report">
+            <thead><tr><th>Cashier</th><th class="num">Safe drops</th><th class="num">Over/short</th><th class="num">Voids</th><th class="num">Refunds</th><th class="num">No-sales</th></tr></thead>
+            <tbody>${s.cashiers.map((c) => `<tr><td>${esc(c.name) || '—'}</td><td class="num">${c.safeDrops === '' || c.safeDrops == null ? '—' : fmt.money(Number(c.safeDrops))}</td><td class="num">${c.overShort === '' || c.overShort == null ? '—' : fmt.signedMoney(Number(c.overShort))}</td><td class="num">${esc(c.voids) || '—'}</td><td class="num">${c.refunds === '' || c.refunds == null ? '—' : fmt.money(Number(c.refunds))}</td><td class="num">${esc(c.noSales) || '—'}</td></tr>`).join('')}</tbody>
+          </table></div>
+        </section>` : ''}
 
         <section class="report-grid__wide">
           <h2>Tank readings</h2>
           <div class="table-wrap"><table class="table table--report">
-            <thead><tr><th>Tank</th><th>Time</th><th class="num">Start</th><th class="num">+ Delivered</th><th class="num">− Pumped</th><th class="num">= Book</th><th class="num">End (in)</th><th class="num">End (gal)</th><th class="num">Over/short</th><th class="num">Water (in)</th></tr></thead>
-            <tbody>${lines.map(([tank, l]) => `<tr>
-              <td>${esc(tank.product)}${l.ticket ? `<br><span class="muted">${esc(l.ticket)}</span>` : ''}</td>
+            <thead><tr><th>Tank</th><th>Time</th><th class="num">Start</th><th class="num">+ Delivered</th><th class="num">− Pumped</th><th class="num">= Book</th><th class="num">End (in)</th><th class="num">End (gal)</th><th class="num">Over/short</th><th class="num">10-day</th><th class="num">Water (in)</th></tr></thead>
+            <tbody>${lines.map(([tank, l, run]) => `<tr>
+              <td>${esc(tank.product)}${l.deliveries.length ? `<br><span class="muted">${l.deliveries.map((d) => `${d.ticket ? `#${esc(d.ticket)} ` : ''}${fmt.number(Number(d.invoiceGallons) || 0)} gal${d.measured !== '' && d.measured != null ? ` (TLS ${fmt.number(Number(d.measured))})` : ''}${d.cost ? ` @ $${Number(d.cost).toFixed(4)}` : ''}`).join('; ')}</span>` : ''}</td>
               <td>${esc(l.time) || '—'}</td>
               <td class="num">${fmt.number(l.start)}</td>
               <td class="num">${fmt.number(l.delivered)}</td>
@@ -791,11 +960,12 @@ function renderReport(date) {
               <td class="num">${fmt.number(l.book)}</td>
               <td class="num">${fmt.number(l.endInches, 2)}</td>
               <td class="num">${fmt.number(l.end)}</td>
-              <td class="num">${fmt.signed(l.overShort)}</td>
+              <td class="num${l.overFlag ? ' is-bad-text' : ''}">${fmt.signed(l.overShort)}</td>
+              <td class="num">${run.period.counted ? fmt.signed(run.period.value) : '—'}</td>
               <td class="num">${fmt.number(l.water, 2)}${l.waterFlag ? ` ${pill('warn', 'Rose')}` : ''}</td>
             </tr>`).join('')}</tbody>
           </table></div>
-          <p class="muted">Mid-grade gallons split ${fmt.number(settings.blendRegularPct, 1)}% to the regular tank and ${fmt.number(100 - settings.blendRegularPct, 1)}% to the premium tank.</p>
+          <p class="muted">${settings.volumeBasis === 'tc' ? 'Temperature-corrected' : 'Gross'} volume. Mid-grade gallons split ${fmt.number(settings.blendRegularPct, 1)}% to the regular tank and ${fmt.number(100 - settings.blendRegularPct, 1)}% to the premium tank.</p>
         </section>
 
         ${day.notes ? `<section class="report-grid__wide"><h2>Notes</h2><p>${esc(day.notes)}</p></section>` : ''}
@@ -983,7 +1153,7 @@ function renderSettings() {
 
       <section class="card">
         <h2 class="card__title">Tanks</h2>
-        <p class="card__hint">Use the tank ID numbers from your PBS registration.</p>
+        <p class="card__hint">Use the tank ID numbers from your PBS registration. Check the capacities against your tank charts.</p>
         ${draft.tanks.map((t, i) => `<div class="fields fields--row">
           ${field({ name: `tanks.${i}.tankId`, label: 'Tank ID', type: 'text', value: t.tankId })}
           ${field({ name: `tanks.${i}.product`, label: 'Product', type: 'text', value: t.product })}
@@ -991,7 +1161,17 @@ function renderSettings() {
           ${field({ name: `tanks.${i}.startCost`, label: 'Starting cost / gal', prefix: '$', value: t.startCost, hint: 'For fuel already in the tank before your first logged delivery' })}
         </div>`).join('')}
         <div class="fields">
-          ${field({ name: 'blendRegularPct', label: 'Mid-grade from the regular tank', suffix: '%', value: value('blendRegularPct'), hint: 'The rest comes from the premium tank. 87 + 93 blended to 89 is 66.7%; 87 + 91 is 50%.' })}
+          ${field({ name: 'blendRegularPct', label: 'Mid-grade: regular share', suffix: '%', value: value('blendRegularPct') })}
+          ${field({ name: 'blendPremiumPct', label: 'Mid-grade: premium share', suffix: '%', value: draft.blendPremiumPct ?? Math.round((100 - Number(draft.blendRegularPct)) * 10) / 10, hint: 'The two must add up to 100. 87 + 93 blended to 89 is 66.7 / 33.3.' })}
+          ${selectField({ name: 'volumeBasis', label: 'Tank volume to use', value: draft.volumeBasis, options: [['gross', 'Gross (TLS Volume)'], ['tc', 'Temperature-corrected (TLS TC Volume)']], hint: 'Used everywhere: daily entry, book inventory and the 10-day worksheet. Change it only at the start of a 10-day period.' })}
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card__title">Cash</h2>
+        <div class="fields">
+          ${field({ name: 'startingBank', label: 'Starting bank', prefix: '$', value: value('startingBank'), hint: 'Cash in the drawer when the day starts. Each day can override it.' })}
+          ${selectField({ name: 'cashBackNetted', label: 'Debit cash back', value: draft.cashBackNetted === true || draft.cashBackNetted === 'yes' ? 'yes' : 'no', options: [['no', 'Subtract from cash'], ['yes', 'Already out of cash total']], hint: "Choose the second if Commander's cash total already has cash back taken out" })}
         </div>
       </section>
 
@@ -1000,6 +1180,7 @@ function renderSettings() {
         <div class="fields">
           ${field({ name: 'reconStart', label: 'First 10-day period starts', type: 'date', value: value('reconStart') })}
           ${field({ name: 'thresholds.cashOverShort', label: 'Flag cash over/short beyond', prefix: '$', value: value('thresholds.cashOverShort') })}
+          ${field({ name: 'thresholds.tankDailyGallons', label: 'Flag a tank off by more than', suffix: 'gal/day', value: value('thresholds.tankDailyGallons'), hint: 'Also used for delivery shortfalls. The 10-day worksheet keeps the NYSDEC 0.75% limit.' })}
           ${field({ name: 'thresholds.waterIncrease', label: 'Flag a water rise of', suffix: 'in', value: value('thresholds.waterIncrease') })}
           ${field({ name: 'thresholds.depositDays', label: 'Flag deposits not made within', suffix: 'days', value: value('thresholds.depositDays') })}
           ${field({ name: 'thresholds.clearDays', label: 'Flag deposits not cleared after', suffix: 'days', value: value('thresholds.clearDays') })}
@@ -1008,15 +1189,47 @@ function renderSettings() {
       </section>
 
       <section class="card">
-        <h2 class="card__title">Inside sales departments</h2>
-        <p class="card__hint">Match these to the departments in Commander.</p>
-        <div class="dept-list" data-dept-list>
-          ${draft.departments.map((d, i) => `<div class="dept">
-            ${field({ name: `departments.${i}.label`, label: `Department ${i + 1}`, type: 'text', value: d.label })}
+        <h2 class="card__title">Sales groups</h2>
+        <p class="card__hint">What you enter each night. Inside groups count as inside sales. Pass-through groups (bottle deposits, house-account payments) are collected but aren't sales.</p>
+        <div class="group-list">
+          ${draft.departments.map((d, i) => `<div class="group-row">
+            ${field({ name: `departments.${i}.label`, label: `Group ${i + 1}`, type: 'text', value: d.label })}
+            ${selectField({ name: `departments.${i}.type`, label: 'Type', value: d.type || 'inside', options: [['inside', 'Inside'], ['passthrough', 'Pass-through']] })}
             <button class="btn btn--ghost btn--small" type="button" data-remove-dept="${i}" aria-label="Remove ${esc(d.label)}">Remove</button>
           </div>`).join('')}
         </div>
-        <button class="btn btn--ghost btn--small" type="button" data-add-dept>Add department</button>
+        <button class="btn btn--ghost btn--small" type="button" data-add-dept>Add group</button>
+      </section>
+
+      <section class="card">
+        <h2 class="card__title">Commander department mapping</h2>
+        <p class="card__hint">Which Commander departments add up into each box on the nightly entry. Fuel departments and dept 9998 (manual fuel) never count as inside sales.</p>
+        ${draft.deptMap.length ? `<div class="map-list">
+          ${draft.deptMap.map((m, i) => {
+            const targets = calc.mapTargets(draft);
+            const target = targets.find((t) => t.key === m.group);
+            return `<div class="map-row">
+              ${field({ name: `deptMap.${i}.number`, label: 'Dept #', type: 'text', value: m.number })}
+              ${field({ name: `deptMap.${i}.name`, label: 'Commander name', type: 'text', value: m.name })}
+              ${selectField({ name: `deptMap.${i}.group`, label: 'Goes to', value: m.group, options: [['', 'Choose…'], ...targets.map((t) => [t.key, `${t.label} · ${calc.GROUP_TYPES[t.type]}`])] })}
+              <span class="map-row__type">${target ? calc.GROUP_TYPES[target.type] : ''}</span>
+              <button class="btn btn--ghost btn--small" type="button" data-remove-map="${i}" aria-label="Remove dept ${esc(m.number)}">Remove</button>
+            </div>`;
+          }).join('')}
+        </div>` : '<p class="empty">No departments mapped yet.</p>'}
+        <button class="btn btn--ghost btn--small" type="button" data-add-map>Add department</button>
+      </section>
+
+      <section class="card">
+        <h2 class="card__title">Payment types</h2>
+        <p class="card__hint">Cash, credit, debit, fleet and house accounts are always there. Add the other methods of payment Commander reports.</p>
+        <div class="group-list">
+          ${draft.paymentTypes.map((t, i) => `<div class="group-row">
+            ${field({ name: `paymentTypes.${i}.label`, label: `Payment type ${i + 1}`, type: 'text', value: t.label })}
+            <button class="btn btn--ghost btn--small" type="button" data-remove-pay="${i}" aria-label="Remove ${esc(t.label)}">Remove</button>
+          </div>`).join('')}
+        </div>
+        <button class="btn btn--ghost btn--small" type="button" data-add-pay>Add payment type</button>
       </section>
 
       <div class="savebar">
@@ -1058,23 +1271,45 @@ function renderSettings() {
     markUnsaved();
   });
 
-  view.querySelector('[data-add-dept]').addEventListener('click', () => {
-    draft.departments.push({ key: `dept-${Date.now().toString(36)}`, label: 'New department' });
+  // Rows added or removed in a list re-render the page, keeping what's been typed.
+  const listChange = (change) => () => {
+    change();
     markUnsaved();
     rerenderKeepingDraft(draft);
-  });
-  view.querySelectorAll('[data-remove-dept]').forEach((button) => {
-    button.addEventListener('click', () => {
-      draft.departments.splice(Number(button.dataset.removeDept), 1);
-      markUnsaved();
-      rerenderKeepingDraft(draft);
-    });
+  };
+  const uid = (prefix) => `${prefix}-${Date.now().toString(36)}`;
+  view.querySelector('[data-add-dept]').addEventListener('click', listChange(() => draft.departments.push({ key: uid('grp'), label: 'New group', type: 'inside' })));
+  view.querySelector('[data-add-map]').addEventListener('click', listChange(() => draft.deptMap.push({ number: '', name: '', group: '' })));
+  view.querySelector('[data-add-pay]').addEventListener('click', listChange(() => draft.paymentTypes.push({ key: uid('pay'), label: 'New payment type' })));
+  view.querySelectorAll('[data-remove-dept]').forEach((b) => b.addEventListener('click', listChange(() => draft.departments.splice(Number(b.dataset.removeDept), 1))));
+  view.querySelectorAll('[data-remove-map]').forEach((b) => b.addEventListener('click', listChange(() => draft.deptMap.splice(Number(b.dataset.removeMap), 1))));
+  view.querySelectorAll('[data-remove-pay]').forEach((b) => b.addEventListener('click', listChange(() => draft.paymentTypes.splice(Number(b.dataset.removePay), 1))));
+  // Keep the two blend shares adding up to 100 as either one is typed.
+  form.addEventListener('input', (event) => {
+    const other = { blendRegularPct: 'blendPremiumPct', blendPremiumPct: 'blendRegularPct' }[event.target.name];
+    if (!other || event.target.value === '') return;
+    const rest = Math.round((100 - Number(event.target.value)) * 10) / 10;
+    if (Number.isFinite(rest)) {
+      form.elements[other].value = rest;
+      setPath(draft, other, String(rest));
+    }
   });
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const regular = Number(draft.blendRegularPct);
+    const premium = Number(draft.blendPremiumPct ?? 100 - regular);
+    if (!Number.isFinite(regular) || !Number.isFinite(premium) || Math.abs(regular + premium - 100) > 0.05) {
+      return alert('The mid-grade regular and premium shares must add up to 100.');
+    }
+    if (draft.deptMap.some((m) => (m.number || m.name) && !m.group)) return alert('Choose where each Commander department goes, or remove the empty rows.');
+    delete draft.blendPremiumPct;
     draft.tanks.forEach((t) => { t.capacity = Number(t.capacity) || 0; });
-    draft.blendRegularPct = Number(draft.blendRegularPct) || 0;
+    draft.blendRegularPct = regular;
+    draft.cashBackNetted = draft.cashBackNetted === true || draft.cashBackNetted === 'yes';
+    draft.thresholds.tankDailyGallons = Number(draft.thresholds.tankDailyGallons) || 0;
+    draft.deptMap = draft.deptMap.filter((m) => m.number || m.name);
+    draft.paymentTypes = draft.paymentTypes.filter((t) => t.label.trim());
     draft.thresholds.cashOverShort = Number(draft.thresholds.cashOverShort) || 0;
     draft.thresholds.waterIncrease = Number(draft.thresholds.waterIncrease) || 0;
     draft.thresholds.depositDays = Number(draft.thresholds.depositDays) || 0;
@@ -1123,6 +1358,7 @@ function renderSettings() {
     await store.clearAll();
     const sampleSettings = structuredClone(settings);
     sampleSettings.tanks.forEach((t) => { if (!t.startCost) t.startCost = SAMPLE_START_COSTS[t.key] || ''; });
+    if (sampleSettings.startingBank === '') sampleSettings.startingBank = 300;
     await store.saveSettings(sampleSettings);
     const today = calc.todayInNewYork();
     const sample = makeSample(sampleSettings, sampleSettings.reconStart, calc.addDays(today, -1));

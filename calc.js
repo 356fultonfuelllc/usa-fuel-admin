@@ -75,22 +75,38 @@ export function todayInNewYork() {
 
 // ---- Daily report ----
 
-// Fuel the owner put in personal vehicles. `onRegister` rows went through the pump and
-// register (in Commander's fuel sales, never paid); the others were pumped outside it.
+// Fuel the owner put in personal vehicles. How each fill-up was handled:
+//   'unpaid' - rung on the register (in Commander's fuel sales) but never paid
+//   'paid'   - rung up and paid (own card or cash): a normal sale, kept as a record only
+//   'off'    - pumped without the register: not in the sales gallons
+// Older rows used onRegister true/false for 'unpaid'/'off'.
+export const PERSONAL_MODES = [
+  ['unpaid', 'Rung up, not paid'],
+  ['paid', 'Rung up and paid'],
+  ['off', 'Pumped without the register'],
+];
+
+export const personalMode = (p) => p.mode || (p.onRegister === false ? 'off' : 'unpaid');
+
 export function personalFuel(day) {
   const rows = (day.personal || []).filter((p) => p && GRADES.some((g) => g.key === p.grade) && num(p.gallons) > 0);
   const byGrade = Object.fromEntries(GRADES.map((g) => [g.key, { gallons: 0, amount: 0, offGallons: 0 }]));
   for (const p of rows) {
-    if (p.onRegister === false) byGrade[p.grade].offGallons += num(p.gallons);
-    else {
+    const mode = personalMode(p);
+    if (mode === 'off') byGrade[p.grade].offGallons += num(p.gallons);
+    else if (mode === 'unpaid') {
       byGrade[p.grade].gallons += num(p.gallons);
       byGrade[p.grade].amount += num(p.amount);
     }
   }
+  // Unpaid and off-register fuel is the owner's draw; paid fuel was bought like any sale.
+  const drawRows = rows.filter((p) => personalMode(p) !== 'paid');
   return {
     rows,
+    drawRows,
     byGrade,
     gallons: total(rows.map((p) => num(p.gallons))),
+    drawGallons: total(drawRows.map((p) => num(p.gallons))),
     registerAmount: total(Object.values(byGrade).map((g) => g.amount)),
   };
 }
@@ -450,9 +466,9 @@ export function dayMargin(day, costs) {
   const gallons = total(known.map((g) => g.gallons));
   const profit = total(known.map((g) => g.profit));
   // What the personal fuel cost (the owner's draw), at the tanks' average cost.
-  const allPersonal = personalFuel(day).rows;
-  const personalCost = allPersonal.length && allPersonal.every((p) => costs[p.grade] != null)
-    ? total(allPersonal.map((p) => num(p.gallons) * costs[p.grade])) : allPersonal.length ? null : 0;
+  const draw = personalFuel(day).drawRows;
+  const personalCost = draw.length && draw.every((p) => costs[p.grade] != null)
+    ? total(draw.map((p) => num(p.gallons) * costs[p.grade])) : draw.length ? null : 0;
   return { grades, profit: known.length ? profit : null, perGallon: gallons ? profit / gallons : null, complete: known.length === sold.length, personalCost };
 }
 
@@ -688,8 +704,8 @@ export function monthProfit(month, days, settings, { priceChanges = [], expenses
     const margin = dayMargin(day, gradeCosts(costsByDate[date], settings));
     if (margin.profit != null) { fuelProfit += margin.profit; fuelKnown = true; }
     const personal = personalFuel(day);
-    personalGallons += personal.gallons;
-    if (personal.gallons) personalCost = margin.personalCost == null || personalCost == null ? null : personalCost + margin.personalCost;
+    personalGallons += personal.drawGallons;
+    if (personal.drawGallons) personalCost = margin.personalCost == null || personalCost == null ? null : personalCost + margin.personalCost;
     fuelGallons += total(margin.grades.map((g) => g.gallons));
     cardSales += num(day.tenders?.credit) + num(day.tenders?.debit) + num(day.tenders?.fleet);
     lotterySales += num(day.lottery?.instant) + num(day.lottery?.online);

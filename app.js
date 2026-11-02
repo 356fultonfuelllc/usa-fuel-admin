@@ -512,9 +512,9 @@ function personalRows(rows) {
   return rows.map((p, i) => `<div class="personal-row" data-personal="${i}">
     ${selectField({ name: `personal.${i}.grade`, label: 'Grade', value: p.grade || 'regular', options: calc.GRADES.map((g) => [g.key, g.label]) })}
     ${field({ name: `personal.${i}.gallons`, label: 'Gallons', suffix: 'gal', value: p.gallons })}
-    ${field({ name: `personal.${i}.amount`, label: 'Pump $', prefix: '$', value: p.amount, hint: p.onRegister === false ? 'Not needed' : 'What the pump/register shows' })}
+    ${field({ name: `personal.${i}.amount`, label: 'Pump $', prefix: '$', value: p.amount, hint: calc.personalMode(p) === 'off' ? 'Not needed' : 'What the pump/register shows' })}
     ${field({ name: `personal.${i}.note`, label: 'Vehicle / note', type: 'text', value: p.note })}
-    <label class="check personal-row__check"><input type="checkbox" data-personal-register="${i}"${p.onRegister === false ? '' : ' checked'}> Went through the register</label>
+    <div class="personal-row__mode">${selectField({ name: `personal.${i}.mode`, label: 'How it was handled', value: calc.personalMode(p), options: calc.PERSONAL_MODES })}</div>
     <button class="btn btn--ghost btn--small" type="button" data-remove-personal="${i}" aria-label="Remove personal fuel ${i + 1}">Remove</button>
   </div>`).join('');
 }
@@ -601,7 +601,7 @@ function renderEntry(dateParam) {
 
         <section class="card">
           <h2 class="card__title">Personal fuel</h2>
-          <p class="card__hint">Fuel you put in your own vehicles. If it went through the register it's already in the fuel sales above but wasn't paid, so it's counted with payments to balance the day and left out of fuel profit. Fuel pumped without the register is added to the gallons pumped from the tank.</p>
+          <p class="card__hint">Fuel you put in your own vehicles. <strong>Rung up, not paid:</strong> it's in the fuel sales above but nobody paid, so it's counted with payments to balance the day and left out of fuel profit. <strong>Rung up and paid:</strong> a normal sale (your card or cash); kept as a record only. <strong>Pumped without the register:</strong> added to the gallons pumped from the tank.</p>
           <div class="personal-list" data-personal-list>${personalRows(draft.personal)}</div>
           <button class="btn btn--ghost btn--small" type="button" data-add-personal>Add personal fuel</button>
         </section>
@@ -756,12 +756,11 @@ function renderEntry(dateParam) {
   }
 
   form.addEventListener('change', (event) => {
-    const box = event.target.closest('[data-personal-register]');
-    if (!box) return;
-    draft.personal[Number(box.dataset.personalRegister)].onRegister = box.checked;
+    const match = /^personal\.(\d+)\.mode$/.exec(event.target.name || '');
+    if (!match) return;
+    delete draft.personal[Number(match[1])].onRegister;
     view.querySelector('[data-personal-list]').innerHTML = personalRows(draft.personal);
-    markUnsaved();
-    refresh();
+    view.querySelector(`[name="personal.${match[1]}.mode"]`).focus();
   });
 
   form.addEventListener('input', (event) => {
@@ -822,7 +821,7 @@ function renderEntry(dateParam) {
     const addPersonal = event.target.closest('[data-add-personal]');
     const removePersonal = event.target.closest('[data-remove-personal]');
     if (addPersonal || removePersonal) {
-      if (addPersonal) draft.personal.push({ grade: 'regular', gallons: '', amount: '', note: '', onRegister: true });
+      if (addPersonal) draft.personal.push({ grade: 'regular', gallons: '', amount: '', note: '', mode: 'unpaid' });
       else draft.personal.splice(Number(removePersonal.dataset.removePersonal), 1);
       view.querySelector('[data-personal-list]').innerHTML = personalRows(draft.personal);
       if (addPersonal) view.querySelector(`[name="personal.${draft.personal.length - 1}.gallons"]`).focus();
@@ -979,7 +978,7 @@ function renderReport(date) {
               ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td></td></tr>` : ''}</tbody>
             <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th></th></tr>
               ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td></td></tr>` : ''}
-              ${calc.personalFuel(day).rows.map((p) => `<tr><td>Personal: ${esc(calc.GRADES.find((g) => g.key === p.grade).label)}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''}${p.onRegister === false ? ' <span class="muted">· not on register</span>' : ''}</td><td class="num">${fmt.number(Number(p.gallons), 3)}</td><td class="num">${p.onRegister === false ? '—' : fmt.money(Number(p.amount) || 0)}</td><td></td></tr>`).join('')}</tfoot>
+              ${calc.personalFuel(day).rows.map((p) => `<tr><td>Personal: ${esc(calc.GRADES.find((g) => g.key === p.grade).label)}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''} <span class="muted">· ${esc(calc.PERSONAL_MODES.find(([k]) => k === calc.personalMode(p))[1].toLowerCase())}</span></td><td class="num">${fmt.number(Number(p.gallons), 3)}</td><td class="num">${calc.personalMode(p) === 'off' ? '—' : fmt.money(Number(p.amount) || 0)}</td><td></td></tr>`).join('')}</tfoot>
           </table>
         </section>
 

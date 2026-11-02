@@ -99,12 +99,12 @@ export function statTile(label, value, delta, note) {
   </div>`;
 }
 
-export function deltaLine(current, previous, upIsGood = true) {
+export function deltaLine(current, previous, upIsGood = true, label = 'vs previous 7 days') {
   if (!previous) return '';
   const change = (current - previous) / previous;
   if (!Number.isFinite(change)) return '';
   const tone = Math.abs(change) < 0.005 ? 'flat' : (change > 0) === upIsGood ? 'up' : 'down';
-  return `<p class="tile__delta tile__delta--${tone}">${change > 0 ? '▲' : change < 0 ? '▼' : '■'} ${fmt.number(Math.abs(change) * 100, 1)}% vs previous 7 days</p>`;
+  return `<p class="tile__delta tile__delta--${tone}">${change > 0 ? '▲' : change < 0 ? '▼' : '■'} ${fmt.number(Math.abs(change) * 100, 1)}% ${label}</p>`;
 }
 
 export const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);

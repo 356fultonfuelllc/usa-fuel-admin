@@ -29,11 +29,13 @@ export function renderProfit(ctx, monthParam) {
     ${ctx.banner()}
     <header class="page-head">
       <div><p class="eyebrow">Money</p><h1>Monthly profit</h1></div>
-      <div class="page-head__actions">
+      <div class="page-head__actions no-print">
         <a class="btn btn--ghost btn--small" href="#/profit/${calc.previousMonth(month)}">← Previous</a>
         <a class="btn btn--ghost btn--small" href="#/profit/${nextMonth(month)}">Next →</a>
+        <button class="btn btn--primary btn--small" type="button" data-print>Print or save PDF</button>
       </div>
     </header>
+    <p class="print-only">${esc(settings.facility.name)} · ${esc(settings.facility.address)} · printed ${mediumDate(today)}</p>
 
     <section class="card">
       <div class="card__head">
@@ -73,8 +75,8 @@ export function renderProfit(ctx, monthParam) {
 
     <section class="card">
       <h2 class="card__title">One-off expenses</h2>
-      <p class="card__hint">Anything that isn't a monthly bill: supplies, a plumber, license fees. Don't add fuel or merchandise invoices; their cost is already in fuel profit and the inside margins. Repairs logged under Inspections &amp; repairs are counted automatically.</p>
-      <form class="inline-form" data-expense-form novalidate>
+      <p class="card__hint no-print">Anything that isn't a monthly bill: supplies, a plumber, license fees. Don't add fuel or merchandise invoices; their cost is already in fuel profit and the inside margins. Repairs logged under Inspections &amp; repairs are counted automatically.</p>
+      <form class="inline-form no-print" data-expense-form novalidate>
         <div class="fields">
           ${field({ name: 'day', label: 'Date', type: 'date', value: month === today.slice(0, 7) ? today : `${month}-01` })}
           ${selectField({ name: 'category', label: 'Category', value: 'other', options: calc.EXPENSE_CATEGORIES })}
@@ -89,11 +91,12 @@ export function renderProfit(ctx, monthParam) {
         <tbody>${p.oneOff.slice().sort((a, b) => b.day.localeCompare(a.day)).map((e) => `<tr>
           <td>${mediumDate(e.day)}</td><td>${esc(categoryLabel(e.category))}</td><td>${esc(e.vendor)}</td><td>${esc(e.note)}</td>
           <td class="num">${fmt.money(Number(e.amount) || 0)}</td>
-          <td class="actions"><button class="btn btn--ghost btn--small" type="button" data-delete-expense="${esc(e.id)}">Delete</button></td>
+          <td class="actions no-print"><button class="btn btn--ghost btn--small" type="button" data-delete-expense="${esc(e.id)}">Delete</button></td>
         </tr>`).join('')}</tbody>
       </table></div>` : `<p class="empty">No one-off expenses in ${monthLabel(month)}.</p>`}
     </section>`;
 
+  ctx.view.querySelector('[data-print]').addEventListener('click', () => window.print());
   const form = ctx.view.querySelector('[data-expense-form]');
   form.addEventListener('submit', async (event) => {
     event.preventDefault();

@@ -12,6 +12,8 @@ import { renderDeposits } from './pages/deposits.js';
 import { renderAccounts, renderAccount, renderStatement } from './pages/accounts.js';
 import { renderWebsite } from './pages/website.js';
 import { renderProfit } from './pages/profit.js';
+import { renderTrends } from './pages/trends.js';
+import { renderExport } from './pages/export.js';
 import { renderCompliance, complianceAlerts } from './pages/compliance.js';
 import { renderInspections, renderInspection, inspectionAlerts } from './pages/inspections.js';
 import { CHECKLISTS } from './pages/compliance-data.js';
@@ -74,6 +76,8 @@ const routes = [
   [/^#\/statement\/([\w-]+)\/(\d{4}-\d{2})$/, (id, month) => renderStatement(ctx, id, month), 'accounts'],
   [/^#\/website$/, () => renderWebsite(ctx), 'website'],
   [/^#\/profit(?:\/(\d{4}-\d{2}))?$/, (month) => renderProfit(ctx, month), 'profit'],
+  [/^#\/trends$/, () => renderTrends(ctx), 'trends'],
+  [/^#\/export$/, () => renderExport(ctx), 'export'],
   [/^#\/compliance$/, () => renderCompliance(ctx), 'compliance'],
   [/^#\/inspections$/, () => renderInspections(ctx), 'inspections'],
   [/^#\/inspection\/new\/(daily|weekly|monthly|annual)$/, (frequency) => renderInspection(ctx, { frequency }), 'inspections'],

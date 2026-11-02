@@ -10,7 +10,33 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,100..125,400..900;1,100..125,700..900&amp;display=swap">
   <link rel="stylesheet" href="admin.css">
-  <script type="module" src="app.js"></script>
+  <!-- Load the current version of every script, even if the browser still has older copies:
+       version.json is fetched fresh each time and lists the files with a version stamp. -->
+  <script>
+    (function () {
+      function load(map, v) {
+        if (map) {
+          var im = document.createElement('script');
+          im.type = 'importmap';
+          im.textContent = JSON.stringify({ imports: map });
+          document.head.appendChild(im);
+        }
+        var s = document.createElement('script');
+        s.type = 'module';
+        s.src = 'app.js' + (v ? '?v=' + v : '');
+        document.head.appendChild(s);
+      }
+      fetch('version.json', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (info) {
+          if (!info) return load(null, '');
+          var map = {};
+          info.files.forEach(function (f) { map['./' + f] = './' + f + '?v=' + info.v; });
+          load(map, info.v);
+        })
+        .catch(function () { load(null, ''); });
+    })();
+  </script>
 </head>
 <body>
   <div class="app">

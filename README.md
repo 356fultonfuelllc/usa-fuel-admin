@@ -8,6 +8,10 @@ The owner's dashboard, served at https://admin.usafuelandmart.com by GitHub Page
 
 Data is stored in Supabase, never in this repository. Sign-in is the admin password only. Setup: [SETUP.md](SETUP.md).
 
+## Publishing
+
+Run `./stamp-version.sh` before each commit you publish. It writes `version.json`, which `index.html` reads fresh on every visit, so browsers load the new scripts right away instead of holding older copies for up to 10 minutes.
+
 ## Preview locally
 
 ```

@@ -58,7 +58,7 @@ function dailySales(ctx, from, to) {
     ...pass.map((d) => `${d.label} (pass-through)`),
     'Lottery scratch-off', 'Lottery draw', 'Sales tax', 'Total sales',
     ...tenderTypes.map((t) => `${t.label} payments`), 'Total payments',
-    'Drive-offs', 'Open prepays', 'Card batch total', 'Sales vs payments difference',
+    'Drive-offs', 'Personal fuel gallons', 'Personal fuel on register', 'Open prepays', 'Card batch total', 'Sales vs payments difference',
     'Starting bank', 'Pay ins', 'Pay outs', 'Debit cash back', 'Expected cash', 'Cash counted', 'Cash over/short', 'Bank deposit',
     'Customers', 'Fuel cost of goods (est.)', 'Fuel profit (est.)',
   ];
@@ -76,7 +76,7 @@ function dailySales(ctx, from, to) {
       ...pass.map((d) => round2(num(day.departments?.[d.key]) || 0)),
       round2(s.lotteryInstant), round2(s.lotteryOnline), round2(s.tax), round2(s.totalSales),
       ...tenderTypes.map((t) => round2(num(day.tenders?.[t.key]) || 0)), round2(s.tenderTotal),
-      round2(s.driveOffAmount), round2(s.openPrepays), round2(s.batchTotal), s.tenderTotal ? s.salesVsPayments : null,
+      round2(s.driveOffAmount), s.personalGallons || null, round2(s.personalAmount) || null, round2(s.openPrepays), round2(s.batchTotal), s.tenderTotal ? s.salesVsPayments : null,
       round2(s.startingBank), round2(s.payIns), round2(s.payOuts), round2(s.cashBack), s.expectedCash, s.countedCash, s.overShort, s.deposit,
       s.customers || null,
       margin.profit == null ? null : round2(s.gradeAmount - margin.profit), round2(margin.profit),
@@ -154,14 +154,14 @@ function houseAccounts(ctx, from, to) {
 }
 
 function monthlySummary(ctx, from, to) {
-  const rows = [['Month', 'Days entered', 'Fuel gallons', 'Fuel profit (before card fees)', 'Inside sales', 'Inside profit (est.)', 'Lottery sales', 'Lottery commission', 'Gross profit', 'Card fees (est.)', 'Monthly bills', 'One-off expenses', 'Repairs', 'Total expenses', 'Net profit']];
+  const rows = [['Month', 'Days entered', 'Fuel gallons sold', 'Fuel profit (before card fees)', 'Inside sales', 'Inside profit (est.)', 'Lottery sales', 'Lottery commission', 'Gross profit', 'Card fees (est.)', 'Monthly bills', 'One-off expenses', 'Repairs', 'Total expenses', 'Net profit', 'Personal fuel gallons', 'Personal fuel at cost (owner draw)']];
   for (const m of monthsIn(from, to)) {
     const p = calc.monthProfit(m, ctx.days, ctx.settings, { priceChanges: ctx.data.price_changes, expenses: ctx.data.expenses, maintenance: ctx.data.maintenance });
     rows.push([
       monthLabel(m), p.daysEntered, Math.round(p.fuelGallons), round2(p.fuelProfit), round2(p.insideSales), round2(p.insideProfit),
       round2(p.lotterySales), round2(p.lotteryProfit), round2(p.grossProfit), round2(p.cardFees),
       round2(p.fixed.reduce((a, e) => a + e.amount, 0)), round2(p.byCategory.reduce((a, c) => a + c.amount, 0)), round2(p.repairCost),
-      round2(p.expenseTotal), round2(p.net),
+      round2(p.expenseTotal), round2(p.net), p.personalGallons || null, round2(p.personalCost),
     ]);
   }
   return rows;

@@ -450,6 +450,7 @@ function blankDay(date) {
     register: {},
     cash: {},
     cashiers: [],
+    personal: [],
     // Start inventory is filled in from yesterday's ending volume; it can be changed.
     tanks: Object.fromEntries(settings.tanks.map((t) => {
       const end = calc.endVolume(previous?.tanks?.[t.key], settings);
@@ -462,6 +463,7 @@ function blankDay(date) {
 // Older days stored one delivery per tank as delivered/cost/ticket; edit them as a list.
 function upgradeDraft(draft) {
   draft.cashiers ||= [];
+  draft.personal ||= [];
   for (const tank of settings.tanks) {
     const reading = (draft.tanks ||= {})[tank.key] ||= {};
     if (!Array.isArray(reading.deliveries)) {
@@ -503,6 +505,17 @@ function deliveryRows(tank, deliveries) {
       ${field({ name: `${base}.${i}.ticket`, label: 'Ticket / BOL #', type: 'text', value: d.ticket })}
     </div>
     <button class="btn btn--ghost btn--small" type="button" data-remove-delivery="${tank.key}:${i}">Remove delivery</button>
+  </div>`).join('');
+}
+
+function personalRows(rows) {
+  return rows.map((p, i) => `<div class="personal-row" data-personal="${i}">
+    ${selectField({ name: `personal.${i}.grade`, label: 'Grade', value: p.grade || 'regular', options: calc.GRADES.map((g) => [g.key, g.label]) })}
+    ${field({ name: `personal.${i}.gallons`, label: 'Gallons', suffix: 'gal', value: p.gallons })}
+    ${field({ name: `personal.${i}.amount`, label: 'Pump $', prefix: '$', value: p.amount, hint: p.onRegister === false ? 'Not needed' : 'What the pump/register shows' })}
+    ${field({ name: `personal.${i}.note`, label: 'Vehicle / note', type: 'text', value: p.note })}
+    <label class="check personal-row__check"><input type="checkbox" data-personal-register="${i}"${p.onRegister === false ? '' : ' checked'}> Went through the register</label>
+    <button class="btn btn--ghost btn--small" type="button" data-remove-personal="${i}" aria-label="Remove personal fuel ${i + 1}">Remove</button>
   </div>`).join('');
 }
 
@@ -584,6 +597,13 @@ function renderEntry(dateParam) {
             ${field({ name: 'driveOffs.amount', label: 'Drive-offs', prefix: '$', value: value('driveOffs.amount') })}
             ${field({ name: 'driveOffs.gallons', label: 'Drive-off gallons', suffix: 'gal', value: value('driveOffs.gallons') })}
           </div>
+        </section>
+
+        <section class="card">
+          <h2 class="card__title">Personal fuel</h2>
+          <p class="card__hint">Fuel you put in your own vehicles. If it went through the register it's already in the fuel sales above but wasn't paid, so it's counted with payments to balance the day and left out of fuel profit. Fuel pumped without the register is added to the gallons pumped from the tank.</p>
+          <div class="personal-list" data-personal-list>${personalRows(draft.personal)}</div>
+          <button class="btn btn--ghost btn--small" type="button" data-add-personal>Add personal fuel</button>
         </section>
 
         <section class="card">
@@ -717,6 +737,7 @@ function renderEntry(dateParam) {
         <div><dt>Sales tax</dt><dd>${fmt.money(s.tax)}</dd></div>
         <div class="summary__total"><dt>Total sales</dt><dd>${fmt.money(s.totalSales)}</dd></div>
         ${s.passthroughAmount ? `<div><dt>Pass-through</dt><dd>${fmt.money(s.passthroughAmount)}</dd></div>` : ''}
+        ${s.personalGallons ? `<div><dt>Personal fuel</dt><dd>${fmt.number(s.personalGallons, 1)} gal${s.personalAmount ? ` · ${fmt.money(s.personalAmount)}` : ''}</dd></div>` : ''}
         <div><dt>Payments</dt><dd>${fmt.money(s.tenderTotal)}</dd></div>
       </dl>
       <h3 class="summary__sub">Checks</h3>
@@ -734,10 +755,35 @@ function renderEntry(dateParam) {
       <p class="muted">Gallons. Red when a day is off by more than ${fmt.number(Number(settings.thresholds.tankDailyGallons))}.</p>`;
   }
 
+  form.addEventListener('change', (event) => {
+    const box = event.target.closest('[data-personal-register]');
+    if (!box) return;
+    draft.personal[Number(box.dataset.personalRegister)].onRegister = box.checked;
+    view.querySelector('[data-personal-list]').innerHTML = personalRows(draft.personal);
+    markUnsaved();
+    refresh();
+  });
+
   form.addEventListener('input', (event) => {
     const input = event.target;
     if (!input.name) return;
     setPath(draft, input.name, input.value);
+    // Fill in the pump $ for personal fuel from the posted credit price, until it's typed.
+    const personalMatch = /^personal\.(\d+)\.(gallons|grade)$/.exec(input.name);
+    if (personalMatch) {
+      const row = draft.personal[Number(personalMatch[1])];
+      const amountBox = view.querySelector(`[name="personal.${personalMatch[1]}.amount"]`);
+      if (row && amountBox && (row.amount === '' || amountBox.dataset.auto === 'yes')) {
+        const price = calc.pricesAt(extra.price_changes, `${date}T23:59`)?.credit?.[row.grade];
+        if (price && Number(row.gallons) > 0) {
+          row.amount = (Number(row.gallons) * Number(price)).toFixed(2);
+          amountBox.value = row.amount;
+          amountBox.dataset.auto = 'yes';
+        }
+      }
+    } else if (/^personal\.\d+\.amount$/.test(input.name)) {
+      delete input.dataset.auto;
+    }
     markUnsaved();
     refresh();
   });
@@ -773,6 +819,17 @@ function renderEntry(dateParam) {
       refresh();
       return;
     }
+    const addPersonal = event.target.closest('[data-add-personal]');
+    const removePersonal = event.target.closest('[data-remove-personal]');
+    if (addPersonal || removePersonal) {
+      if (addPersonal) draft.personal.push({ grade: 'regular', gallons: '', amount: '', note: '', onRegister: true });
+      else draft.personal.splice(Number(removePersonal.dataset.removePersonal), 1);
+      view.querySelector('[data-personal-list]').innerHTML = personalRows(draft.personal);
+      if (addPersonal) view.querySelector(`[name="personal.${draft.personal.length - 1}.gallons"]`).focus();
+      markUnsaved();
+      refresh();
+      return;
+    }
     const addCashier = event.target.closest('[data-add-cashier]');
     const removeCashier = event.target.closest('[data-remove-cashier]');
     if (addCashier || removeCashier) {
@@ -789,6 +846,7 @@ function renderEntry(dateParam) {
     event.preventDefault();
     draft.date = date;
     draft.cashiers = draft.cashiers.filter((c) => Object.values(c).some((v) => String(v ?? '').trim() !== ''));
+    draft.personal = draft.personal.filter((p) => Number(p.gallons) > 0);
     for (const tank of settings.tanks) {
       draft.tanks[tank.key].deliveries = draft.tanks[tank.key].deliveries.filter((d) => Object.values(d).some((v) => String(v ?? '').trim() !== ''));
     }
@@ -920,7 +978,8 @@ function renderReport(date) {
             <tbody>${s.fuel.map((f) => `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td></tr>`).join('')}
               ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td></td></tr>` : ''}</tbody>
             <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th></th></tr>
-              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td></td></tr>` : ''}</tfoot>
+              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td></td></tr>` : ''}
+              ${calc.personalFuel(day).rows.map((p) => `<tr><td>Personal: ${esc(calc.GRADES.find((g) => g.key === p.grade).label)}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''}${p.onRegister === false ? ' <span class="muted">· not on register</span>' : ''}</td><td class="num">${fmt.number(Number(p.gallons), 3)}</td><td class="num">${p.onRegister === false ? '—' : fmt.money(Number(p.amount) || 0)}</td><td></td></tr>`).join('')}</tfoot>
           </table>
         </section>
 

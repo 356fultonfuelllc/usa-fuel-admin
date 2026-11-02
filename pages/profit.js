@@ -69,6 +69,7 @@ export function renderProfit(ctx, monthParam) {
           ${p.repairCost ? `<tr><td>− Repairs <span class="muted">(from the maintenance log)</span></td><td class="num">${fmt.money(p.repairCost)}</td></tr>` : ''}
           <tr class="pnl__total"><th>Net profit</th><th class="num">${fmt.money(p.net)}</th></tr>
         </tbody>
+        ${p.personalGallons ? `<tbody><tr><td>Personal fuel taken <span class="muted">(${fmt.number(p.personalGallons, 1)} gal at cost, owner's draw, not in profit above)</span></td><td class="num">${fmt.money(p.personalCost)}</td></tr></tbody>` : ''}
       </table></div>
       <p class="muted">Monthly bills are set in <a href="#/settings">Settings</a>. Break-even is the gallons a day that would cover expenses after inside and lottery profit, at this month's fuel profit per gallon.</p>
     </section>

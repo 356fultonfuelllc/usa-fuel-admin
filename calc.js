@@ -75,6 +75,26 @@ export function todayInNewYork() {
 
 // ---- Daily report ----
 
+// Fuel the owner put in personal vehicles. `onRegister` rows went through the pump and
+// register (in Commander's fuel sales, never paid); the others were pumped outside it.
+export function personalFuel(day) {
+  const rows = (day.personal || []).filter((p) => p && GRADES.some((g) => g.key === p.grade) && num(p.gallons) > 0);
+  const byGrade = Object.fromEntries(GRADES.map((g) => [g.key, { gallons: 0, amount: 0, offGallons: 0 }]));
+  for (const p of rows) {
+    if (p.onRegister === false) byGrade[p.grade].offGallons += num(p.gallons);
+    else {
+      byGrade[p.grade].gallons += num(p.gallons);
+      byGrade[p.grade].amount += num(p.amount);
+    }
+  }
+  return {
+    rows,
+    byGrade,
+    gallons: total(rows.map((p) => num(p.gallons))),
+    registerAmount: total(Object.values(byGrade).map((g) => g.amount)),
+  };
+}
+
 export function summarizeDay(day, settings) {
   const fuel = GRADES.map((grade) => {
     const gallons = num(day.fuel?.[grade.key]?.gallons);
@@ -107,8 +127,11 @@ export function summarizeDay(day, settings) {
   const tenderTotal = total(tenders.map((t) => t.amount));
   const register = day.register || {};
   const openPrepays = num(register.openPrepays);
-  // A drive-off was pumped but never paid; an open prepay was paid but not yet pumped.
-  const payments = tenderTotal + driveOffAmount - openPrepays;
+  const personal = personalFuel(day);
+  const personalAmount = personal.registerAmount;
+  // A drive-off was pumped but never paid; so was personal fuel rung on the register.
+  // An open prepay was paid but not yet pumped.
+  const payments = tenderTotal + driveOffAmount + personalAmount - openPrepays;
   const salesVsPayments = cents(totalSales + passthroughAmount - payments);
 
   const cash = day.cash || {};
@@ -130,6 +153,7 @@ export function summarizeDay(day, settings) {
     lotteryInstant, lotteryOnline, lotterySales, lotteryPayouts,
     tax, totalSales,
     tenders, tenderTotal, openPrepays, payments, salesVsPayments,
+    personalGallons: personal.gallons, personalAmount,
     batchTotal: has(register.batchTotal) ? num(register.batchTotal) : null,
     commanderSales: has(register.totalSales) ? num(register.totalSales) : null,
     commanderPayments: has(register.totalPayments) ? num(register.totalPayments) : null,
@@ -164,7 +188,7 @@ export function dayChecks(date, days, settings, { houseCharges = 0 } = {}) {
 
   if (s.tenderTotal > 0) {
     add('payments', 'Sales vs payments', ['Sales + pass-through', cents(s.totalSales + s.passthroughAmount)], ['Payments', cents(s.payments)], {
-      note: `Payments = all payment types${s.driveOffAmount ? ` + drive-offs ${money(s.driveOffAmount)}` : ''}${s.openPrepays ? ` − open prepays ${money(s.openPrepays)}` : ''}.`,
+      note: `Payments = all payment types${s.driveOffAmount ? ` + drive-offs ${money(s.driveOffAmount)}` : ''}${s.personalAmount ? ` + personal fuel ${money(s.personalAmount)}` : ''}${s.openPrepays ? ` − open prepays ${money(s.openPrepays)}` : ''}.`,
     });
   }
   if (s.commanderSales != null) add('commanderSales', 'Sales vs Commander', ['Our sales', cents(s.totalSales)], ['Commander total sales', s.commanderSales]);
@@ -222,7 +246,9 @@ export function tankWeights(tank, settings) {
 
 export function pumpedFromSales(day, tank, settings) {
   const weights = tankWeights(tank, settings);
-  return Math.round(total(Object.entries(weights).map(([grade, w]) => num(day.fuel?.[grade]?.gallons) * w)));
+  // Personal fuel pumped outside the register isn't in the sales gallons, but left the tank.
+  const off = personalFuel(day).byGrade;
+  return Math.round(total(Object.entries(weights).map(([grade, w]) => (num(day.fuel?.[grade]?.gallons) + (off[grade]?.offGallons || 0)) * w)));
 }
 
 // The TLS-350 volume used for inventory: gross (Volume) or temperature-corrected (TC Volume).
@@ -402,9 +428,11 @@ export function gradeCosts(costsByTank, settings) {
 
 // Realized margin for a day: what each gallon actually sold for, less what it cost.
 export function dayMargin(day, costs) {
+  const personal = personalFuel(day).byGrade;
   const grades = GRADES.map((grade) => {
-    const gallons = num(day.fuel?.[grade.key]?.gallons);
-    const amount = num(day.fuel?.[grade.key]?.amount);
+    // Personal fuel rung on the register isn't a sale; leave it out of profit.
+    const gallons = Math.max(0, num(day.fuel?.[grade.key]?.gallons) - personal[grade.key].gallons);
+    const amount = Math.max(0, num(day.fuel?.[grade.key]?.amount) - personal[grade.key].amount);
     const cost = costs[grade.key];
     const price = gallons ? amount / gallons : null;
     return {
@@ -421,7 +449,11 @@ export function dayMargin(day, costs) {
   const known = sold.filter((g) => g.profit != null);
   const gallons = total(known.map((g) => g.gallons));
   const profit = total(known.map((g) => g.profit));
-  return { grades, profit: known.length ? profit : null, perGallon: gallons ? profit / gallons : null, complete: known.length === sold.length };
+  // What the personal fuel cost (the owner's draw), at the tanks' average cost.
+  const allPersonal = personalFuel(day).rows;
+  const personalCost = allPersonal.length && allPersonal.every((p) => costs[p.grade] != null)
+    ? total(allPersonal.map((p) => num(p.gallons) * costs[p.grade])) : allPersonal.length ? null : 0;
+  return { grades, profit: known.length ? profit : null, perGallon: gallons ? profit / gallons : null, complete: known.length === sold.length, personalCost };
 }
 
 // The posted prices in effect at a moment (YYYY-MM-DDTHH:MM, New York time).
@@ -593,8 +625,9 @@ export function tankOutlook(tank, days, settings, today) {
 // split typed from Commander when there is one; otherwise works it out from the day's gallons,
 // dollars and posted prices (only exact when prices didn't change that day).
 export function priceLevelSplit(day, gradeKey, priceChanges, date) {
-  const gallons = num(day.fuel?.[gradeKey]?.gallons);
-  const amount = num(day.fuel?.[gradeKey]?.amount);
+  const personal = personalFuel(day).byGrade[gradeKey];
+  const gallons = Math.max(0, num(day.fuel?.[gradeKey]?.gallons) - personal.gallons);
+  const amount = Math.max(0, num(day.fuel?.[gradeKey]?.amount) - personal.amount);
   if (!gallons) return null;
   const prices = pricesAt(priceChanges, `${date}T23:59`);
   const cashPrice = prices?.cash?.[gradeKey] ? num(prices.cash[gradeKey]) : null;
@@ -647,11 +680,16 @@ export function monthProfit(month, days, settings, { priceChanges = [], expenses
   let fuelGallons = 0;
   let cardSales = 0;
   let lotterySales = 0;
+  let personalGallons = 0;
+  let personalCost = 0;
   const groups = Object.fromEntries(settings.departments.filter((d) => (d.type || 'inside') === 'inside').map((d) => [d.key, { ...d, sales: 0 }]));
   for (const date of dates) {
     const day = days[date];
     const margin = dayMargin(day, gradeCosts(costsByDate[date], settings));
     if (margin.profit != null) { fuelProfit += margin.profit; fuelKnown = true; }
+    const personal = personalFuel(day);
+    personalGallons += personal.gallons;
+    if (personal.gallons) personalCost = margin.personalCost == null || personalCost == null ? null : personalCost + margin.personalCost;
     fuelGallons += total(margin.grades.map((g) => g.gallons));
     cardSales += num(day.tenders?.credit) + num(day.tenders?.debit) + num(day.tenders?.fleet);
     lotterySales += num(day.lottery?.instant) + num(day.lottery?.online);
@@ -689,6 +727,7 @@ export function monthProfit(month, days, settings, { priceChanges = [], expenses
     grossProfit,
     cardSales, cardFees, fixed, oneOff, byCategory, repairs, repairCost, expenseTotal, net,
     breakEvenPerDay, gallonsPerDay: dates.length ? fuelGallons / dates.length : null,
+    personalGallons, personalCost,
   };
 }
 

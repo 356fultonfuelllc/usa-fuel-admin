@@ -55,7 +55,10 @@ export function makeSample(settings, from, to) {
     for (const [grade, gal] of Object.entries(gallons)) {
       const g = Math.round(gal * 1000) / 1000;
       // Prices go up a nickel on day 8, matching the sample price log.
-      fuel[grade] = { gallons: g, amount: money(g * (prices[grade] + (i >= 7 ? 0.05 : 0))) };
+      // About a third of gallons sell at the cash price, 10 cents under credit.
+      const credit = prices[grade] + (i >= 7 ? 0.05 : 0);
+      const cashGallons = g * between(0.28, 0.4);
+      fuel[grade] = { gallons: g, amount: money(cashGallons * (credit - 0.1) + (g - cashGallons) * credit) };
     }
     if (i % 5 === 3) fuel.manual = money(between(10, 40));
     const driveOffs = i === 6 ? { amount: 41.25, gallons: 10.05 } : {};

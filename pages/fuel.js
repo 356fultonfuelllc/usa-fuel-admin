@@ -40,6 +40,31 @@ export function renderFuel(ctx, monthParam) {
     return { ...grade, gallons, amount, price: gallons ? amount / gallons : null, profit, margin: knownGallons ? profit / knownGallons : null };
   });
   const monthProfit = rows.some((r) => r.margin.profit != null) ? rows.reduce((a, r) => a + (r.margin.profit || 0), 0) : null;
+
+  // Cash vs credit for the month, by grade.
+  const levels = GRADES.map((grade) => {
+    const t = { ...grade, cashGallons: 0, creditGallons: 0, cashProfit: 0, creditProfit: 0, fees: 0, days: 0, estimated: 0, unsplit: 0 };
+    for (const r of rows) {
+      const split = calc.priceLevelSplit(days[r.date], grade.key, ctx.data.price_changes, r.date);
+      if (!split) continue;
+      const cost = calc.gradeCosts(costsByDate[r.date], settings)[grade.key];
+      const profit = calc.priceLevelProfit(split, cost, settings);
+      if (!profit) { t.unsplit += 1; continue; }
+      t.days += 1;
+      if (!split.exact && !split.reliable) t.estimated += 1;
+      t.cashGallons += split.cashGallons;
+      t.creditGallons += split.creditGallons;
+      t.cashProfit += profit.cashProfit;
+      t.creditProfit += profit.creditProfit;
+      t.fees += profit.fees;
+    }
+    return t;
+  });
+  const anySplit = levels.some((l) => l.days);
+  const feeSet = settings.cards?.feePct !== '' && settings.cards?.feePct != null;
+  const today = calc.todayInNewYork();
+  const outlook = settings.tanks.map((tank) => calc.tankOutlook(tank, days, settings, today));
+  const orderPill = (o) => ({ order: pill('bad', 'Order now'), soon: pill('warn', 'Order soon'), ok: pill('good', 'OK'), unknown: pill('idle', 'No reading') }[o.state]);
   const monthGallons = rows.reduce((a, r) => a + r.gallons, 0);
   const missingCosts = GRADES.some((g) => costs[g.key] == null);
 
@@ -53,7 +78,7 @@ export function renderFuel(ctx, monthParam) {
   ctx.view.innerHTML = `
     ${ctx.banner()}
     <header class="page-head">
-      <div><p class="eyebrow">Fuel</p><h1>Prices &amp; margin</h1></div>
+      <div><p class="eyebrow">Fuel</p><h1>Prices, ordering &amp; margin</h1></div>
       <div class="page-head__actions"><button class="btn btn--primary" type="button" data-new-price>Log a price change</button></div>
     </header>
 
@@ -106,6 +131,27 @@ export function renderFuel(ctx, monthParam) {
 
     <section class="card">
       <div class="card__head">
+        <h2 class="card__title">Fuel ordering</h2>
+        <span class="muted">Fill to ${fmt.number(Number(settings.ordering.maxFillPct))}% · order ${fmt.number(Number(settings.ordering.leadDays))} day${Number(settings.ordering.leadDays) === 1 ? '' : 's'} ahead · <a href="#/settings">change</a></span>
+      </div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Tank</th><th class="num">In the tank</th><th class="num">Sells / day</th><th class="num">Days of supply</th><th class="num">Reorder at</th><th>Order by</th><th class="num">Room for a delivery</th><th></th></tr></thead>
+        <tbody>${outlook.map((o) => `<tr>
+          <td>${esc(o.tank.product)}</td>
+          <td class="num">${o.latest ? `${fmt.number(o.estimate)} gal<br><span class="muted">${o.elapsed ? `estimated · ` : ''}${fmt.number(Math.round(o.fullPct * 100))}% full</span>` : '—'}</td>
+          <td class="num">${o.perDay == null ? '—' : `${fmt.number(Math.round(o.perDay))} gal`}</td>
+          <td class="num">${o.daysOfSupply == null ? '—' : fmt.number(o.daysOfSupply, 1)}</td>
+          <td class="num">${fmt.number(o.reorderAt)} gal</td>
+          <td>${o.state === 'order' ? 'Now' : o.reorderDate ? mediumDate(o.reorderDate) : '—'}</td>
+          <td class="num">${o.latest ? `${fmt.number(o.room)} gal` : '—'}</td>
+          <td>${orderPill(o)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted">From each tank's last TLS reading${outlook[0]?.latest ? ` (${mediumDate(outlook[0].latest)} close)` : ''}, less what has sold since. Sales per day average the last 7 days entered. "Room" is what fits up to the fill limit, rounded down to 100 gallons.</p>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
         <h2 class="card__title">Fuel profit · ${monthLabel(month)}</h2>
         <div class="button-row">
           <a class="btn btn--ghost btn--small" href="#/fuel/${calc.previousMonth(month)}">← Previous</a>
@@ -122,6 +168,23 @@ export function renderFuel(ctx, monthParam) {
         <thead><tr><th>Grade</th><th class="num">Gallons</th><th class="num">Avg sold at</th><th class="num">Margin / gal</th><th class="num">Profit</th></tr></thead>
         <tbody>${byGrade.map((g) => `<tr><td>${g.label}</td><td class="num">${fmt.number(g.gallons)}</td><td class="num">${fmt.ppg(g.price)}</td><td class="num">${g.margin == null ? '—' : fmt.cents(g.margin)}</td><td class="num">${g.profit == null ? '—' : fmt.money(g.profit)}</td></tr>`).join('')}</tbody>
       </table></div>
+      <h3 class="card__sub">Cash vs credit</h3>
+      ${anySplit ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>Grade</th><th class="num">Cash gallons</th><th class="num">Cash profit / gal</th><th class="num">Credit gallons</th><th class="num">Credit profit / gal</th><th class="num">Card fees</th><th class="num">Cash profit</th><th class="num">Credit profit</th></tr></thead>
+        <tbody>${levels.filter((l) => l.days).map((l) => `<tr>
+          <td>${l.label}${l.estimated ? `<br><span class="muted">${l.estimated} day${l.estimated === 1 ? '' : 's'} estimated</span>` : ''}</td>
+          <td class="num">${fmt.number(l.cashGallons)}</td>
+          <td class="num">${l.cashGallons ? fmt.cents(l.cashProfit / l.cashGallons) : '—'}</td>
+          <td class="num">${fmt.number(l.creditGallons)}</td>
+          <td class="num">${l.creditGallons ? fmt.cents(l.creditProfit / l.creditGallons) : '—'}</td>
+          <td class="num">${feeSet ? fmt.money(l.fees) : '—'}</td>
+          <td class="num">${fmt.money(l.cashProfit)}</td>
+          <td class="num">${fmt.money(l.creditProfit)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted">${feeSet ? `Credit profit is after card fees of ${fmt.number(Number(settings.cards.feePct), 2)}% on credit-price sales.` : `${pill('warn', 'No card fee set')} Add your card processing rate in <a href="#/settings">Settings</a> to take fees off credit profit.`} The split comes from the cash/credit gallons typed on each day, or is worked out from that day's gallons, dollars and posted prices.${settings.cards?.debitPays === 'cash' ? ' Debit pays the cash price here, so some cash-price gallons also carry card fees that aren\'t counted.' : ''}</p>`
+        : `<p class="empty">Log both cash and credit prices (above) to see cash and credit profit separately.</p>`}
+
       ${rows.length ? `<details class="details">
         <summary>By day</summary>
         <div class="table-wrap"><table class="table">

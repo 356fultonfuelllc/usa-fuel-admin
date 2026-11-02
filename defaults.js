@@ -58,6 +58,23 @@ export const DEFAULT_SETTINGS = {
     termsDays: 15,
     nextNumber: 1001,
   },
+  // Fuel ordering: never fill a tank past this share of capacity; order this many days ahead.
+  // Each tank can also have its own reorder level (tanks[].reorderAt, gallons).
+  ordering: {
+    maxFillPct: 90,
+    leadDays: 1,
+  },
+  // Card processing: effective fee as a % of card sales. debitPays: which pump price debit gets.
+  cards: {
+    feePct: '',
+    debitPays: 'credit',
+  },
+  // NY Lottery commission as a % of lottery sales.
+  lottery: {
+    commissionPct: '',
+  },
+  // Bills that come every month, for monthly profit: [{ key, label, amount }].
+  fixedExpenses: [],
 };
 
 // Saved settings from an older version may be missing newer fields; fill them in.
@@ -70,6 +87,9 @@ export function withDefaults(saved) {
     facility: { ...base.facility, ...saved.facility },
     thresholds: { ...base.thresholds, ...saved.thresholds },
     houseAccounts: { ...base.houseAccounts, ...saved.houseAccounts },
+    ordering: { ...base.ordering, ...saved.ordering },
+    cards: { ...base.cards, ...saved.cards },
+    lottery: { ...base.lottery, ...saved.lottery },
     tanks: (saved.tanks || base.tanks).map((tank) => ({ ...base.tanks.find((t) => t.key === tank.key), ...tank })),
     // Older saved departments have no type; they were all inside sales. Pass-through groups
     // didn't exist, so add the default ones.

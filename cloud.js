@@ -6,7 +6,7 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, ADMIN_LOGIN } from './config.js
 import { withDefaults } from './defaults.js';
 
 // Record lists and the Supabase table each one lives in.
-const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments'];
+const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance'];
 
 // Sign-in is email + password only; the dashboard never sends email.
 const db = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { detectSessionInUrl: false } });

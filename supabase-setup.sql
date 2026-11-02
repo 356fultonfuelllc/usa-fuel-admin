@@ -132,6 +132,22 @@ create table if not exists public.house_payments (
 create index if not exists house_charges_day on public.house_charges (day);
 create index if not exists house_payments_day on public.house_payments (day);
 
+-- Expenses, compliance items, inspection checklists and repair logs (added November 2026)
+create table if not exists public.expenses (
+  id text primary key, day date not null, data jsonb not null, updated_at timestamptz not null default now()
+);
+create table if not exists public.compliance_items (
+  id text primary key, day date not null, data jsonb not null, updated_at timestamptz not null default now()
+);
+create table if not exists public.inspections (
+  id text primary key, day date not null, data jsonb not null, updated_at timestamptz not null default now()
+);
+create table if not exists public.maintenance (
+  id text primary key, day date not null, data jsonb not null, updated_at timestamptz not null default now()
+);
+create index if not exists expenses_day on public.expenses (day);
+create index if not exists inspections_day on public.inspections (day);
+
 -- Previous versions of any edited or deleted money record.
 create table if not exists public.change_history (
   id bigint generated always as identity primary key,
@@ -160,7 +176,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments'] loop
+  foreach t in array array['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance'] loop
     execute format('drop trigger if exists %I on public.%I', t || '_history', t);
     execute format('create trigger %I after update or delete on public.%I for each row execute function public.keep_change_history()', t || '_history', t);
     execute format('alter table public.%I enable row level security', t);

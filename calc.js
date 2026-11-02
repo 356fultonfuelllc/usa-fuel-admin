@@ -551,3 +551,175 @@ export function activeDeals(content, today) {
 export function holidayOn(content, date) {
   return (content?.holiday_hours?.items || []).find((h) => h.date === date) || null;
 }
+
+// ---- Fuel ordering ----
+
+// Where each tank stands at the last reading, how fast it's selling, and how much fits.
+export function tankOutlook(tank, days, settings, today) {
+  const dates = Object.keys(days).filter((d) => d <= today).sort();
+  const latest = dates.slice().reverse().find((d) => endVolume(days[d].tanks?.[tank.key], settings) != null) || null;
+  const recent = dates.slice(-7).map((d) => tankLine(d, tank, days, settings).pumped).filter((v) => v != null && v > 0);
+  const perDay = recent.length ? total(recent) / recent.length : null;
+  const capacity = num(tank.capacity);
+  const leadDays = num(settings.ordering?.leadDays ?? 1);
+  // Without a set reorder level: keep two days of sales beyond the delivery lead time,
+  // and never go under 10% of the tank.
+  const reorderAt = has(tank.reorderAt)
+    ? num(tank.reorderAt)
+    : Math.round(Math.max(capacity * 0.1, (perDay || 0) * (leadDays + 2)) / 100) * 100;
+  const maxFill = Math.round(capacity * num(settings.ordering?.maxFillPct || 90) / 100);
+  if (!latest) return { tank, latest: null, perDay, capacity, reorderAt, maxFill, state: 'unknown' };
+
+  const level = endVolume(days[latest].tanks[tank.key], settings);
+  // Readings are taken at close; take off what has sold since then (whole days only).
+  const elapsed = Math.max(0, daysBetween(latest, today) - 1);
+  const estimate = perDay == null ? level : Math.max(0, Math.round(level - perDay * elapsed));
+  const daysOfSupply = perDay ? estimate / perDay : null;
+  const daysToReorder = perDay ? (estimate - reorderAt) / perDay : null;
+  const room = Math.max(0, Math.floor((maxFill - estimate) / 100) * 100);
+  let state = 'ok';
+  if (estimate <= reorderAt || (daysToReorder != null && daysToReorder <= leadDays)) state = 'order';
+  else if (daysToReorder != null && daysToReorder <= leadDays + 2) state = 'soon';
+  return {
+    tank, latest, level, estimate, elapsed, perDay, samples: recent.length, capacity, reorderAt, maxFill, leadDays,
+    daysOfSupply, daysToReorder, room, fullPct: capacity ? estimate / capacity : null, state,
+    reorderDate: daysToReorder == null ? null : addDays(today, Math.max(0, Math.floor(daysToReorder))),
+  };
+}
+
+// ---- Cash vs credit ----
+
+// Gallons and dollars sold at the cash and credit price for one grade on one day. Uses the
+// split typed from Commander when there is one; otherwise works it out from the day's gallons,
+// dollars and posted prices (only exact when prices didn't change that day).
+export function priceLevelSplit(day, gradeKey, priceChanges, date) {
+  const gallons = num(day.fuel?.[gradeKey]?.gallons);
+  const amount = num(day.fuel?.[gradeKey]?.amount);
+  if (!gallons) return null;
+  const prices = pricesAt(priceChanges, `${date}T23:59`);
+  const cashPrice = prices?.cash?.[gradeKey] ? num(prices.cash[gradeKey]) : null;
+  const creditPrice = prices?.credit?.[gradeKey] ? num(prices.credit[gradeKey]) : null;
+  const typed = day.fuel?.[gradeKey]?.cashGallons;
+  if (has(typed)) {
+    const cashGallons = Math.min(gallons, Math.max(0, num(typed)));
+    const cashAmount = cashPrice != null ? cashGallons * cashPrice : (amount / gallons) * cashGallons;
+    return { gallons, amount, cashGallons, creditGallons: gallons - cashGallons, cashAmount, creditAmount: amount - cashAmount, exact: true, reliable: true };
+  }
+  if (cashPrice == null || creditPrice == null || creditPrice <= cashPrice) return { gallons, amount, cashGallons: null, creditGallons: null, exact: false, reliable: false, reason: 'Log both cash and credit prices to split this grade.' };
+  const changedToday = priceChanges.some((p) => p.effectiveAt.slice(0, 10) === date && pricesAt(priceChanges, `${date}T00:00`));
+  const raw = (gallons * creditPrice - amount) / (creditPrice - cashPrice);
+  const cashGallons = Math.min(gallons, Math.max(0, raw));
+  const clamped = raw < -0.5 || raw > gallons + 0.5;
+  const cashAmount = cashGallons * cashPrice;
+  return {
+    gallons, amount, cashGallons, creditGallons: gallons - cashGallons, cashAmount, creditAmount: amount - cashAmount,
+    exact: false, reliable: !changedToday && !clamped,
+    reason: changedToday ? 'Prices changed during the day, so this is an estimate.' : clamped ? "The day's dollars don't fit the posted prices (discounts?), so this is an estimate." : '',
+  };
+}
+
+// Cash and credit profit for one grade-day, with card fees taken off credit-price sales.
+export function priceLevelProfit(split, cost, settings) {
+  if (!split || split.cashGallons == null || cost == null) return null;
+  const feeRate = num(settings.cards?.feePct) / 100;
+  const fees = split.creditAmount * feeRate;
+  return {
+    cashProfit: split.cashAmount - split.cashGallons * cost,
+    creditProfit: split.creditAmount - split.creditGallons * cost - fees,
+    fees,
+  };
+}
+
+// ---- Monthly profit ----
+
+export const EXPENSE_CATEGORIES = [
+  ['payroll', 'Payroll'], ['rent', 'Rent / mortgage'], ['utilities', 'Utilities'], ['insurance', 'Insurance'],
+  ['repairs', 'Repairs & maintenance'], ['supplies', 'Supplies'], ['fees', 'Bank & card fees'], ['taxes', 'Taxes & licenses'],
+  ['professional', 'Accounting & legal'], ['other', 'Other'],
+];
+
+export function monthProfit(month, days, settings, { priceChanges = [], expenses = [], maintenance = [] } = {}) {
+  const { start, end } = monthBounds(month);
+  const dates = Object.keys(days).filter((d) => d >= start && d <= end).sort();
+  const costsByDate = tankCosts(days, settings);
+  let fuelProfit = 0;
+  let fuelKnown = false;
+  let fuelGallons = 0;
+  let cardSales = 0;
+  let lotterySales = 0;
+  const groups = Object.fromEntries(settings.departments.filter((d) => (d.type || 'inside') === 'inside').map((d) => [d.key, { ...d, sales: 0 }]));
+  for (const date of dates) {
+    const day = days[date];
+    const margin = dayMargin(day, gradeCosts(costsByDate[date], settings));
+    if (margin.profit != null) { fuelProfit += margin.profit; fuelKnown = true; }
+    fuelGallons += total(margin.grades.map((g) => g.gallons));
+    cardSales += num(day.tenders?.credit) + num(day.tenders?.debit) + num(day.tenders?.fleet);
+    lotterySales += num(day.lottery?.instant) + num(day.lottery?.online);
+    for (const key of Object.keys(groups)) groups[key].sales += num(day.departments?.[key]);
+  }
+  const inside = Object.values(groups).map((g) => ({ ...g, profit: has(g.marginPct) ? g.sales * num(g.marginPct) / 100 : null }));
+  const insideSales = total(inside.map((g) => g.sales));
+  const insideProfit = total(inside.map((g) => g.profit || 0));
+  const insideMissing = inside.filter((g) => g.sales > 0 && g.profit == null);
+  const lotteryProfit = has(settings.lottery?.commissionPct) ? lotterySales * num(settings.lottery.commissionPct) / 100 : null;
+  const grossProfit = (fuelKnown ? fuelProfit : 0) + insideProfit + (lotteryProfit || 0);
+
+  const cardFees = has(settings.cards?.feePct) ? cardSales * num(settings.cards.feePct) / 100 : null;
+  const fixed = (settings.fixedExpenses || []).filter((e) => has(e.amount)).map((e) => ({ label: e.label, amount: num(e.amount) }));
+  const inMonth = (r) => r.day >= start && r.day <= end;
+  const oneOff = expenses.filter(inMonth);
+  const repairs = maintenance.filter(inMonth).filter((m) => has(m.cost));
+  const byCategory = EXPENSE_CATEGORIES.map(([key, label]) => ({ key, label, amount: total(oneOff.filter((e) => (e.category || 'other') === key).map((e) => num(e.amount))) }))
+    .filter((c) => c.amount);
+  const repairCost = total(repairs.map((m) => num(m.cost)));
+  const expenseTotal = (cardFees || 0) + total(fixed.map((e) => e.amount)) + total(byCategory.map((c) => c.amount)) + repairCost;
+  const net = grossProfit - expenseTotal;
+
+  // Gallons a day needed to cover expenses, after inside and lottery profit.
+  const daysInMonth = daysBetween(start, end) + 1;
+  const perGallon = fuelKnown && fuelGallons ? fuelProfit / fuelGallons : null;
+  const fromFuel = expenseTotal - insideProfit - (lotteryProfit || 0);
+  const breakEvenPerDay = perGallon && perGallon > 0 ? Math.max(0, fromFuel) / perGallon / daysInMonth : null;
+
+  return {
+    month, start, end, dates, daysEntered: dates.length, daysInMonth,
+    fuelProfit: fuelKnown ? fuelProfit : null, fuelGallons, perGallon,
+    inside, insideSales, insideProfit, insideMissing,
+    lotterySales, lotteryProfit,
+    grossProfit,
+    cardSales, cardFees, fixed, oneOff, byCategory, repairs, repairCost, expenseTotal, net,
+    breakEvenPerDay, gallonsPerDay: dates.length ? fuelGallons / dates.length : null,
+  };
+}
+
+// ---- Compliance calendar and inspections ----
+
+export function addInterval(date, every, unit) {
+  const [y, m, d] = date.split('-').map(Number);
+  const n = num(every);
+  if (unit === 'days') return addDays(date, n);
+  const months = unit === 'years' ? n * 12 : n;
+  // Same day of the month, or the month's last day if it's shorter.
+  const target = new Date(Date.UTC(y, m - 1 + months, 1));
+  const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), Math.min(d, last))).toISOString().slice(0, 10);
+}
+
+export function complianceStatus(item, today, soonDays = 30) {
+  const lastDone = (item.history || []).map((h) => h.date).filter(Boolean).sort().at(-1) || item.lastDone || '';
+  const due = item.dueDate || (lastDone && has(item.every) ? addInterval(lastDone, item.every, item.unit || 'years') : '');
+  if (!due) return { lastDone, due: '', state: 'unknown', days: null };
+  const days = daysBetween(today, due);
+  return { lastDone, due, days, state: days < 0 ? 'overdue' : days <= soonDays ? 'soon' : 'ok' };
+}
+
+// When a checklist of a given frequency is next due, from the last time it was done.
+export const CHECKLIST_DAYS = { daily: 1, weekly: 7, monthly: 30, annual: 365 };
+
+export function checklistStatus(frequency, logs, today) {
+  const last = logs.filter((l) => l.template === frequency).map((l) => l.day).sort().at(-1) || '';
+  if (!last) return { last: '', due: today, state: 'never', days: null };
+  const due = addDays(last, CHECKLIST_DAYS[frequency]);
+  const days = daysBetween(today, due);
+  return { last, due, days, state: days < 0 ? 'overdue' : days === 0 ? 'due' : 'ok' };
+}

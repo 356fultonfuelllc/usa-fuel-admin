@@ -11,6 +11,10 @@ import { renderFuel } from './pages/fuel.js';
 import { renderDeposits } from './pages/deposits.js';
 import { renderAccounts, renderAccount, renderStatement } from './pages/accounts.js';
 import { renderWebsite } from './pages/website.js';
+import { renderProfit } from './pages/profit.js';
+import { renderCompliance, complianceAlerts } from './pages/compliance.js';
+import { renderInspections, renderInspection, inspectionAlerts } from './pages/inspections.js';
+import { CHECKLISTS } from './pages/compliance-data.js';
 
 const view = document.getElementById('view');
 const cloud = store.mode === 'cloud';
@@ -19,7 +23,7 @@ let settings;
 let days = {};
 let reconNotes = {};
 // Records kept in lists (see store.list) plus the website content.
-const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments'];
+const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance'];
 let extra = { ...Object.fromEntries(COLLECTIONS.map((c) => [c, []])), content: {} };
 let unsaved = false;
 let currentHash = location.hash || '#/';
@@ -69,6 +73,11 @@ const routes = [
   [/^#\/account\/([\w-]+)(?:\/(\d{4}-\d{2}))?$/, (id, month) => renderAccount(ctx, id, month), 'accounts'],
   [/^#\/statement\/([\w-]+)\/(\d{4}-\d{2})$/, (id, month) => renderStatement(ctx, id, month), 'accounts'],
   [/^#\/website$/, () => renderWebsite(ctx), 'website'],
+  [/^#\/profit(?:\/(\d{4}-\d{2}))?$/, (month) => renderProfit(ctx, month), 'profit'],
+  [/^#\/compliance$/, () => renderCompliance(ctx), 'compliance'],
+  [/^#\/inspections$/, () => renderInspections(ctx), 'inspections'],
+  [/^#\/inspection\/new\/(daily|weekly|monthly|annual)$/, (frequency) => renderInspection(ctx, { frequency }), 'inspections'],
+  [/^#\/inspection\/([\w-]+)$/, (id) => renderInspection(ctx, { id }), 'inspections'],
   [/^#\/settings$/, renderSettings, 'settings'],
 ];
 
@@ -273,6 +282,21 @@ function attentionItems(today) {
   const dates = sortedDates();
   const earliest = dates[0] || today;
 
+  // Fuel to order.
+  for (const tank of settings.tanks) {
+    const o = calc.tankOutlook(tank, days, settings, today);
+    if (o.state === 'order') items.push(['bad', `Order ${tank.product.toLowerCase()}: about ${fmt.number(o.estimate)} gal left${o.daysOfSupply != null ? ` (${fmt.number(o.daysOfSupply, 1)} days)` : ''}. Room for ${fmt.number(o.room)} gal.`, '#/fuel', 'Fuel ordering']);
+    else if (o.state === 'soon') items.push(['warn', `Order ${tank.product.toLowerCase()} by ${mediumDate(o.reorderDate)}: about ${fmt.number(o.daysOfSupply, 1)} days left.`, '#/fuel', 'Fuel ordering']);
+  }
+  // Compliance items due within 30 days, and staff checklists that are overdue.
+  for (const { item, status } of complianceAlerts(extra.compliance_items, today)) {
+    items.push([status.state === 'overdue' ? 'bad' : 'warn', status.state === 'overdue' ? `${item.name} was due ${mediumDate(status.due)}.` : `${item.name} is due ${mediumDate(status.due)}.`, '#/compliance', 'Compliance']);
+  }
+  for (const { frequency, status } of inspectionAlerts(extra.inspections, today)) {
+    const label = CHECKLISTS[frequency].title;
+    items.push([frequency === 'daily' ? 'warn' : 'bad', status.state === 'never' ? `No ${label.toLowerCase()} recorded yet.` : `${label} was due ${mediumDate(status.due)}.`, `#/inspection/new/${frequency}`, 'Start it']);
+  }
+
   // Missing days in the last 30 days (only after the first entered day).
   for (let d = calc.addDays(today, -1); d >= earliest && d >= calc.addDays(today, -30); d = calc.addDays(d, -1)) {
     if (!days[d]) items.push(['warn', `No report entered for ${mediumDate(d)}.`, `#/day/${d}`, 'Enter it']);
@@ -308,7 +332,7 @@ function attentionItems(today) {
         if (!c.available || c.ok || c.key === 'cash' || c.key === 'payments') continue;
         const diff = c.unit === 'money' ? usd.format(Math.abs(c.diff)) : `${fmt.number(Math.abs(c.diff))} gal`;
         const link = c.key === 'house' ? '#/accounts' : `#/day/${d}`;
-        items.push([c.key.startsWith('delivery') || c.key.startsWith('tank') ? 'bad' : 'warn', `${c.label} is off by ${diff} on ${mediumDate(d)} (${c.a[0].toLowerCase()} vs ${c.b[0].toLowerCase()}).`, link, c.key === 'house' ? 'Accounts' : 'Check entry']);
+        items.push([c.key.startsWith('delivery') || c.key.startsWith('tank') ? 'bad' : 'warn', `${c.label} is off by ${diff} on ${mediumDate(d)} (${c.a[0]} vs ${c.b[0]}).`, link, c.key === 'house' ? 'Accounts' : 'Check entry']);
       }
     }
   }
@@ -348,6 +372,7 @@ function renderHome() {
   const period = today >= settings.reconStart ? calc.reconcilePeriod(periodStart, days, settings) : [];
   const items = attentionItems(today);
 
+  const outlook = settings.tanks.map((tank) => calc.tankOutlook(tank, days, settings, today));
   view.innerHTML = `
     ${sampleBanner()}
     <header class="page-head">
@@ -362,6 +387,18 @@ function renderHome() {
       <h2 class="card__title">Last 7 days</h2>
       ${tiles}
     </section>
+
+    ${outlook.some((o) => o.latest) ? `<section class="card">
+      <div class="card__head">
+        <h2 class="card__title">Tank levels</h2>
+        <a class="link" href="#/fuel">Fuel ordering</a>
+      </div>
+      <div class="tank-levels">${outlook.map((o) => `<div class="tank-level tank-level--${o.state}">
+        <div class="tank-level__head"><strong>${esc(o.tank.product.replace(' unleaded', ''))}</strong>${{ order: pill('bad', 'Order now'), soon: pill('warn', 'Order soon'), ok: pill('good', 'OK'), unknown: pill('idle', 'No reading') }[o.state]}</div>
+        <div class="tank-level__bar" role="img" aria-label="${o.latest ? `${Math.round(o.fullPct * 100)}% full` : 'No reading'}"><span style="width:${o.latest ? Math.min(100, Math.round(o.fullPct * 100)) : 0}%"></span><i style="left:${Math.min(100, Math.round(o.reorderAt / (o.capacity || 1) * 100))}%"></i></div>
+        <p class="muted">${o.latest ? `${fmt.number(o.estimate)} of ${fmt.number(o.capacity)} gal${o.daysOfSupply != null ? ` · ${fmt.number(o.daysOfSupply, 1)} days` : ''}` : 'No reading yet'}</p>
+      </div>`).join('')}</div>
+    </section>` : ''}
 
     <div class="grid-2">
       <section class="card">
@@ -531,6 +568,13 @@ function renderEntry(dateParam) {
               ${field({ name: `fuel.${g.key}.gallons`, label: `${g.label} gallons`, suffix: 'gal', value: value(`fuel.${g.key}.gallons`) })}
               ${field({ name: `fuel.${g.key}.amount`, label: `${g.label} sales`, prefix: '$', value: value(`fuel.${g.key}.amount`) })}`).join('')}
           </div>
+          <details class="details split-details"${calc.GRADES.some((g) => value(`fuel.${g.key}.cashGallons`)) ? ' open' : ''}>
+            <summary>Cash / credit split (optional)</summary>
+            <p class="card__hint">Gallons sold at the cash price, from Commander's fuel report by price level. Leave blank to use the estimate shown.</p>
+            <div class="fields">
+              ${calc.GRADES.map((g) => field({ name: `fuel.${g.key}.cashGallons`, label: `${g.label} at cash price`, suffix: 'gal', value: value(`fuel.${g.key}.cashGallons`) })).join('')}
+            </div>
+          </details>
           <div class="fields fields--after">
             ${field({ name: 'fuel.manual', label: 'Manual fuel sales', prefix: '$', value: value('fuel.manual'), hint: deptHint('manualFuel') || 'Commander dept 9998' })}
             ${field({ name: 'driveOffs.amount', label: 'Drive-offs', prefix: '$', value: value('driveOffs.amount') })}
@@ -645,6 +689,13 @@ function renderEntry(dateParam) {
     const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, merged, settings), calc.tankRunning(date, tank, merged, settings)]);
     const checks = calc.dayChecks(date, merged, settings, { houseCharges: calc.houseChargesOn(date, extra.house_charges) });
 
+    for (const g of calc.GRADES) {
+      const box = view.querySelector(`[name="fuel.${g.key}.cashGallons"]`);
+      const untyped = structuredClone(draft);
+      if (untyped.fuel?.[g.key]) delete untyped.fuel[g.key].cashGallons;
+      const split = calc.priceLevelSplit(untyped, g.key, extra.price_changes, date);
+      box.placeholder = split?.cashGallons != null ? `≈ ${fmt.number(split.cashGallons, 1)}` : '';
+    }
     for (const [tank, line] of lines) {
       view.querySelector(`[name="tanks.${tank.key}.pumped"]`).placeholder = fmt.number(calc.pumpedFromSales(draft, tank, settings));
       const box = view.querySelector(`[data-tank-line="${tank.key}"]`);
@@ -1159,10 +1210,13 @@ function renderSettings() {
           ${field({ name: `tanks.${i}.product`, label: 'Product', type: 'text', value: t.product })}
           ${field({ name: `tanks.${i}.capacity`, label: 'Capacity', suffix: 'gal', value: t.capacity })}
           ${field({ name: `tanks.${i}.startCost`, label: 'Starting cost / gal', prefix: '$', value: t.startCost, hint: 'For fuel already in the tank before your first logged delivery' })}
+          ${field({ name: `tanks.${i}.reorderAt`, label: 'Reorder at', suffix: 'gal', value: t.reorderAt ?? '', placeholder: 'Automatic', hint: 'Blank: 2 days of sales past the lead time, at least 10% of the tank' })}
         </div>`).join('')}
         <div class="fields">
           ${field({ name: 'blendRegularPct', label: 'Mid-grade: regular share', suffix: '%', value: value('blendRegularPct') })}
           ${field({ name: 'blendPremiumPct', label: 'Mid-grade: premium share', suffix: '%', value: draft.blendPremiumPct ?? Math.round((100 - Number(draft.blendRegularPct)) * 10) / 10, hint: 'The two must add up to 100. 87 + 93 blended to 89 is 66.7 / 33.3.' })}
+          ${field({ name: 'ordering.maxFillPct', label: 'Fill tanks up to', suffix: '% full', value: value('ordering.maxFillPct'), hint: 'Used for how much fits in a delivery' })}
+          ${field({ name: 'ordering.leadDays', label: 'Order this far ahead', suffix: 'days', value: value('ordering.leadDays'), hint: 'How long your supplier takes to deliver' })}
           ${selectField({ name: 'volumeBasis', label: 'Tank volume to use', value: draft.volumeBasis, options: [['gross', 'Gross (TLS Volume)'], ['tc', 'Temperature-corrected (TLS TC Volume)']], hint: 'Used everywhere: daily entry, book inventory and the 10-day worksheet. Change it only at the start of a 10-day period.' })}
         </div>
       </section>
@@ -1173,6 +1227,29 @@ function renderSettings() {
           ${field({ name: 'startingBank', label: 'Starting bank', prefix: '$', value: value('startingBank'), hint: 'Cash in the drawer when the day starts. Each day can override it.' })}
           ${selectField({ name: 'cashBackNetted', label: 'Debit cash back', value: draft.cashBackNetted === true || draft.cashBackNetted === 'yes' ? 'yes' : 'no', options: [['no', 'Subtract from cash'], ['yes', 'Already out of cash total']], hint: "Choose the second if Commander's cash total already has cash back taken out" })}
         </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card__title">Cards and lottery</h2>
+        <p class="card__hint">For profit. Your effective card rate is total processing fees ÷ card sales on a monthly statement.</p>
+        <div class="fields">
+          ${field({ name: 'cards.feePct', label: 'Card processing rate', suffix: '%', value: value('cards.feePct'), placeholder: 'e.g. 2.5' })}
+          ${selectField({ name: 'cards.debitPays', label: 'Debit at the pump pays', value: draft.cards.debitPays, options: [['credit', 'The credit price'], ['cash', 'The cash price']] })}
+          ${field({ name: 'lottery.commissionPct', label: 'Lottery commission', suffix: '%', value: value('lottery.commissionPct'), hint: 'What NY Lottery pays you on sales' })}
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card__title">Monthly bills</h2>
+        <p class="card__hint">Bills that come every month (rent, payroll, utilities, insurance...). One-off costs go on the Monthly profit page. Don't include fuel or store merchandise: their cost is already taken off in fuel profit and the inside margin % below.</p>
+        <div class="group-list">
+          ${draft.fixedExpenses.map((e, i) => `<div class="group-row">
+            ${field({ name: `fixedExpenses.${i}.label`, label: `Bill ${i + 1}`, type: 'text', value: e.label })}
+            ${field({ name: `fixedExpenses.${i}.amount`, label: 'Per month', prefix: '$', value: e.amount })}
+            <button class="btn btn--ghost btn--small" type="button" data-remove-bill="${i}" aria-label="Remove ${esc(e.label)}">Remove</button>
+          </div>`).join('')}
+        </div>
+        <button class="btn btn--ghost btn--small" type="button" data-add-bill>Add a bill</button>
       </section>
 
       <section class="card">
@@ -1190,11 +1267,12 @@ function renderSettings() {
 
       <section class="card">
         <h2 class="card__title">Sales groups</h2>
-        <p class="card__hint">What you enter each night. Inside groups count as inside sales. Pass-through groups (bottle deposits, house-account payments) are collected but aren't sales.</p>
+        <p class="card__hint">What you enter each night. Inside groups count as inside sales. Pass-through groups (bottle deposits, house-account payments) are collected but aren't sales. Margin is the share of each sale you keep after the cost of the goods, used for monthly profit.</p>
         <div class="group-list">
           ${draft.departments.map((d, i) => `<div class="group-row">
             ${field({ name: `departments.${i}.label`, label: `Group ${i + 1}`, type: 'text', value: d.label })}
             ${selectField({ name: `departments.${i}.type`, label: 'Type', value: d.type || 'inside', options: [['inside', 'Inside'], ['passthrough', 'Pass-through']] })}
+            ${(d.type || 'inside') === 'inside' ? field({ name: `departments.${i}.marginPct`, label: 'Margin', suffix: '%', value: d.marginPct ?? '', placeholder: 'e.g. 30' }) : '<span></span>'}
             <button class="btn btn--ghost btn--small" type="button" data-remove-dept="${i}" aria-label="Remove ${esc(d.label)}">Remove</button>
           </div>`).join('')}
         </div>
@@ -1283,6 +1361,8 @@ function renderSettings() {
   view.querySelector('[data-add-pay]').addEventListener('click', listChange(() => draft.paymentTypes.push({ key: uid('pay'), label: 'New payment type' })));
   view.querySelectorAll('[data-remove-dept]').forEach((b) => b.addEventListener('click', listChange(() => draft.departments.splice(Number(b.dataset.removeDept), 1))));
   view.querySelectorAll('[data-remove-map]').forEach((b) => b.addEventListener('click', listChange(() => draft.deptMap.splice(Number(b.dataset.removeMap), 1))));
+  view.querySelector('[data-add-bill]').addEventListener('click', listChange(() => draft.fixedExpenses.push({ key: uid('bill'), label: '', amount: '' })));
+  view.querySelectorAll('[data-remove-bill]').forEach((b) => b.addEventListener('click', listChange(() => draft.fixedExpenses.splice(Number(b.dataset.removeBill), 1))));
   view.querySelectorAll('[data-remove-pay]').forEach((b) => b.addEventListener('click', listChange(() => draft.paymentTypes.splice(Number(b.dataset.removePay), 1))));
   // Keep the two blend shares adding up to 100 as either one is typed.
   form.addEventListener('input', (event) => {
@@ -1310,6 +1390,9 @@ function renderSettings() {
     draft.thresholds.tankDailyGallons = Number(draft.thresholds.tankDailyGallons) || 0;
     draft.deptMap = draft.deptMap.filter((m) => m.number || m.name);
     draft.paymentTypes = draft.paymentTypes.filter((t) => t.label.trim());
+    draft.fixedExpenses = draft.fixedExpenses.filter((e) => e.label.trim() || e.amount !== '');
+    draft.ordering.maxFillPct = Number(draft.ordering.maxFillPct) || 90;
+    draft.ordering.leadDays = Number(draft.ordering.leadDays) || 0;
     draft.thresholds.cashOverShort = Number(draft.thresholds.cashOverShort) || 0;
     draft.thresholds.waterIncrease = Number(draft.thresholds.waterIncrease) || 0;
     draft.thresholds.depositDays = Number(draft.thresholds.depositDays) || 0;

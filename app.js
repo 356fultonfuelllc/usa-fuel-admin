@@ -440,6 +440,8 @@ function blankDay(date) {
     date,
     preparedBy: previous?.preparedBy || '',
     fuel: {},
+    // Prices carry over from the last report or the price log; they can be changed.
+    prices: calc.defaultPrices(date, days, extra.price_changes),
     driveOffs: {},
     departments: {},
     lottery: {},
@@ -447,7 +449,8 @@ function blankDay(date) {
     customers: '',
     counts: {},
     tenders: {},
-    register: {},
+    // The card batch number counts up by one each day.
+    register: { batchNumber: /^\d+$/.test(previous?.register?.batchNumber ?? '') ? String(Number(previous.register.batchNumber) + 1) : '' },
     cash: {},
     cashiers: [],
     personal: [],
@@ -461,7 +464,8 @@ function blankDay(date) {
 }
 
 // Older days stored one delivery per tank as delivered/cost/ticket; edit them as a list.
-function upgradeDraft(draft) {
+function upgradeDraft(draft, date) {
+  draft.prices = calc.dayPrices(draft, extra.price_changes, date);
   draft.cashiers ||= [];
   draft.personal ||= [];
   for (const tank of settings.tanks) {
@@ -534,7 +538,7 @@ function cashierRows(cashiers) {
 function renderEntry(dateParam) {
   const date = dateParam || calc.todayInNewYork();
   const exists = Boolean(days[date]);
-  const draft = upgradeDraft(exists ? structuredClone(days[date]) : blankDay(date));
+  const draft = upgradeDraft(exists ? structuredClone(days[date]) : blankDay(date), date);
   const value = (path) => getPath(draft, path);
   const tc = settings.volumeBasis === 'tc';
   const endKey = tc ? 'endTc' : 'endGallons';
@@ -577,13 +581,15 @@ function renderEntry(dateParam) {
         <p class="muted entry__tip">Tab or Enter moves to the next box. Enter on the last box saves the day.</p>
         <section class="card">
           <h2 class="card__title">Fuel sales</h2>
-          <p class="card__hint">From the Commander fuel report, by grade.</p>
+          <p class="card__hint">From the Commander fuel report, by grade. Prices fill in from the last report or the price log; type over them if the pumps were different. Credit follows the cash price until you change it.</p>
           <div class="grade-grid">
-            <span class="grade-grid__head">Grade</span><span class="grade-grid__head">Gallons</span><span class="grade-grid__head">Sales</span>
+            <span class="grade-grid__head">Grade</span><span class="grade-grid__head">Gallons</span><span class="grade-grid__head">Sales</span><span class="grade-grid__head">Cash price</span><span class="grade-grid__head">Credit price</span>
             ${calc.GRADES.map((g) => `
               <span class="grade-grid__label">${g.label}</span>
               ${field({ name: `fuel.${g.key}.gallons`, label: `${g.label} gallons`, suffix: 'gal', value: value(`fuel.${g.key}.gallons`) })}
-              ${field({ name: `fuel.${g.key}.amount`, label: `${g.label} sales`, prefix: '$', value: value(`fuel.${g.key}.amount`) })}`).join('')}
+              ${field({ name: `fuel.${g.key}.amount`, label: `${g.label} sales`, prefix: '$', value: value(`fuel.${g.key}.amount`) })}
+              ${field({ name: `prices.cash.${g.key}`, label: `${g.label} cash price`, prefix: '$', value: value(`prices.cash.${g.key}`) })}
+              ${field({ name: `prices.credit.${g.key}`, label: `${g.label} credit price`, prefix: '$', value: value(`prices.credit.${g.key}`) })}`).join('')}
           </div>
           <details class="details split-details"${calc.GRADES.some((g) => value(`fuel.${g.key}.cashGallons`)) ? ' open' : ''}>
             <summary>Cash / credit split (optional)</summary>
@@ -650,6 +656,7 @@ function renderEntry(dateParam) {
           </div>
           <h3 class="card__sub">From the register reports</h3>
           <div class="fields">
+            ${field({ name: 'register.batchNumber', label: 'Batch number', value: value('register.batchNumber'), hint: "Filled from yesterday's batch + 1" })}
             ${field({ name: 'register.batchTotal', label: 'Card network batch total', prefix: '$', value: value('register.batchTotal') })}
             ${field({ name: 'register.openPrepays', label: 'Open prepays at close', prefix: '$', value: value('register.openPrepays') })}
             ${field({ name: 'register.totalSales', label: 'Commander total sales', prefix: '$', value: value('register.totalSales'), hint: 'Copied from the report, for the cross-check' })}
@@ -699,6 +706,10 @@ function renderEntry(dateParam) {
 
   const form = view.querySelector('[data-entry-form]');
   const summaryBox = view.querySelector('[data-entry-summary]');
+  const creditGaps = Object.fromEntries(calc.GRADES.map((g) => {
+    const gap = Number(value(`prices.credit.${g.key}`)) - Number(value(`prices.cash.${g.key}`));
+    return [g.key, value(`prices.credit.${g.key}`) && value(`prices.cash.${g.key}`) && gap > 0 ? gap : 0.1];
+  }));
   const status = view.querySelector('[data-save-status]');
 
   const markUnsaved = () => {
@@ -767,13 +778,23 @@ function renderEntry(dateParam) {
     const input = event.target;
     if (!input.name) return;
     setPath(draft, input.name, input.value);
+    // The credit price keeps its gap to the cash price, until it's typed.
+    const priceMatch = /^prices\.(cash|credit)\.(\w+)$/.exec(input.name);
+    if (priceMatch?.[1] === 'credit') input.dataset.typed = 'yes';
+    if (priceMatch?.[1] === 'cash' && input.value !== '' && Number.isFinite(Number(input.value))) {
+      const creditBox = view.querySelector(`[name="prices.credit.${priceMatch[2]}"]`);
+      if (!creditBox.dataset.typed) {
+        creditBox.value = String(Math.round((Number(input.value) + creditGaps[priceMatch[2]]) * 1000) / 1000);
+        setPath(draft, creditBox.name, creditBox.value);
+      }
+    }
     // Fill in the pump $ for personal fuel from the posted credit price, until it's typed.
     const personalMatch = /^personal\.(\d+)\.(gallons|grade)$/.exec(input.name);
     if (personalMatch) {
       const row = draft.personal[Number(personalMatch[1])];
       const amountBox = view.querySelector(`[name="personal.${personalMatch[1]}.amount"]`);
       if (row && amountBox && (row.amount === '' || amountBox.dataset.auto === 'yes')) {
-        const price = calc.pricesAt(extra.price_changes, `${date}T23:59`)?.credit?.[row.grade];
+        const price = calc.dayPrices(draft, extra.price_changes, date).credit[row.grade];
         if (price && Number(row.gallons) > 0) {
           row.amount = (Number(row.gallons) * Number(price)).toFixed(2);
           amountBox.value = row.amount;
@@ -926,6 +947,8 @@ function renderReport(date) {
     return;
   }
   const s = calc.summarizeDay(day, settings);
+  const prices = calc.dayPrices(day, extra.price_changes, date);
+  const priceText = (price) => (price ? `$${Number(price).toFixed(3)}` : '—');
   const lastWeek = days[calc.addDays(date, -7)] ? calc.summarizeDay(days[calc.addDays(date, -7)], settings) : null;
   const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, days, settings), calc.tankRunning(date, tank, days, settings)]);
   const checks = calc.dayChecks(date, days, settings, { houseCharges: calc.houseChargesOn(date, extra.house_charges) });
@@ -970,14 +993,14 @@ function renderReport(date) {
       </div>
 
       <div class="report-grid">
-        <section>
+        <section class="report-grid__fuel">
           <h2>Fuel sales</h2>
           <table class="table table--report">
-            <thead><tr><th>Grade</th><th class="num">Gallons</th><th class="num">Sales</th><th class="num">Avg $/gal</th></tr></thead>
-            <tbody>${s.fuel.map((f) => `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td></tr>`).join('')}
-              ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td></td></tr>` : ''}</tbody>
-            <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th></th></tr>
-              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td></td></tr>` : ''}
+            <thead><tr><th>Grade</th><th class="num">Gallons</th><th class="num">Sales</th><th class="num">Avg $/gal</th><th class="num">Cash</th><th class="num">Credit</th></tr></thead>
+            <tbody>${s.fuel.map((f) => `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td><td class="num">${priceText(prices.cash[f.key])}</td><td class="num">${priceText(prices.credit[f.key])}</td></tr>`).join('')}
+              ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td colspan="3"></td></tr>` : ''}</tbody>
+            <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th colspan="3"></th></tr>
+              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td colspan="3"></td></tr>` : ''}
               ${calc.personalFuel(day).rows.map((p) => `<tr><td>Personal: ${esc(calc.GRADES.find((g) => g.key === p.grade).label)}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''} <span class="muted">· ${esc(calc.PERSONAL_MODES.find(([k]) => k === calc.personalMode(p))[1].toLowerCase())}</span></td><td class="num">${fmt.number(Number(p.gallons), 3)}</td><td class="num">${calc.personalMode(p) === 'off' ? '—' : fmt.money(Number(p.amount) || 0)}</td><td></td></tr>`).join('')}</tfoot>
           </table>
         </section>
@@ -1016,7 +1039,7 @@ function renderReport(date) {
             <tfoot>
               <tr><th>Total payments</th><th class="num">${fmt.money(s.tenderTotal)}</th></tr>
               ${s.openPrepays ? `<tr><td>Open prepays at close</td><td class="num">${fmt.money(s.openPrepays)}</td></tr>` : ''}
-              <tr><td>Card batch total</td><td class="num">${fmt.money(s.batchTotal)}</td></tr>
+              <tr><td>Card batch total${day.register?.batchNumber ? ` <span class="muted">(batch ${esc(day.register.batchNumber)})</span>` : ''}</td><td class="num">${fmt.money(s.batchTotal)}</td></tr>
               <tr><td>Commander sales · payments</td><td class="num">${fmt.money(s.commanderSales)} · ${fmt.money(s.commanderPayments)}</td></tr>
             </tfoot>
           </table>

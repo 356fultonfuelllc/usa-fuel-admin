@@ -314,8 +314,9 @@ export function renderAccount(ctx, id, monthParam) {
   const fillPrice = () => {
     const product = el('product').value;
     if (priceTyped || product === 'inside') return;
-    const posted = calc.pricesAt(priceChanges, `${el('day').value}T23:59`);
-    el('price').value = posted?.credit?.[product] ?? '';
+    const day = el('day').value;
+    const prices = ctx.days[day] ? calc.dayPrices(ctx.days[day], priceChanges, day) : calc.defaultPrices(day, ctx.days, priceChanges);
+    el('price').value = prices.credit[product] ?? '';
   };
   const fillAmount = () => {
     if (amountTyped) return;

@@ -480,6 +480,26 @@ export function pricesAt(priceChanges, when) {
     .at(-1) || null;
 }
 
+// The prices for one report: what's on the report, otherwise the log at the end of that day.
+export function dayPrices(day, priceChanges, date) {
+  const logged = pricesAt(priceChanges, `${date}T23:59`);
+  const level = (name) => Object.fromEntries(GRADES.map((g) => [g.key, has(day?.prices?.[name]?.[g.key]) ? String(day.prices[name][g.key]) : String(logged?.[name]?.[g.key] ?? '')]));
+  return { cash: level('cash'), credit: level('credit') };
+}
+
+// Starting prices for a new report: the last report's, unless a newer price change is logged.
+export function defaultPrices(date, days, priceChanges) {
+  const previous = Object.keys(days).filter((d) => d < date).sort().at(-1);
+  const prices = dayPrices(days[previous], priceChanges, date);
+  const logged = pricesAt(priceChanges, `${date}T23:59`);
+  if (logged?.effectiveAt > `${previous}T23:59`) {
+    for (const level of ['cash', 'credit']) {
+      for (const g of GRADES) if (has(logged[level]?.[g.key])) prices[level][g.key] = String(logged[level][g.key]);
+    }
+  }
+  return prices;
+}
+
 // ---- Bank deposits ----
 
 export function depositState(date, day, record, settings, today) {
@@ -645,9 +665,9 @@ export function priceLevelSplit(day, gradeKey, priceChanges, date) {
   const gallons = Math.max(0, num(day.fuel?.[gradeKey]?.gallons) - personal.gallons);
   const amount = Math.max(0, num(day.fuel?.[gradeKey]?.amount) - personal.amount);
   if (!gallons) return null;
-  const prices = pricesAt(priceChanges, `${date}T23:59`);
-  const cashPrice = prices?.cash?.[gradeKey] ? num(prices.cash[gradeKey]) : null;
-  const creditPrice = prices?.credit?.[gradeKey] ? num(prices.credit[gradeKey]) : null;
+  const prices = dayPrices(day, priceChanges, date);
+  const cashPrice = prices.cash[gradeKey] ? num(prices.cash[gradeKey]) : null;
+  const creditPrice = prices.credit[gradeKey] ? num(prices.credit[gradeKey]) : null;
   const typed = day.fuel?.[gradeKey]?.cashGallons;
   if (has(typed)) {
     const cashGallons = Math.min(gallons, Math.max(0, num(typed)));
@@ -687,6 +707,70 @@ export const EXPENSE_CATEGORIES = [
   ['professional', 'Accounting & legal'], ['other', 'Other'],
 ];
 
+const categoryName = (key) => (EXPENSE_CATEGORIES.find(([k]) => k === key) || [key, 'Other'])[1];
+
+// One day's profit before expenses. `day` is null for a date that only has an expense.
+function dayProfitRow(date, day, margin, groups, feeRate, commissionRate, settings, priceChanges) {
+  const grades = margin ? margin.grades.filter((g) => g.gallons > 0) : [];
+  // Cash-price vs credit-price fuel, before card fees (fees come off the day's card sales below).
+  const levels = grades.map((g) => {
+    const split = day ? priceLevelSplit(day, g.key, priceChanges, date) : null;
+    if (!split || split.cashGallons == null || g.cost == null) {
+      return { key: g.key, label: g.label, split: false, reason: g.cost == null ? 'No cost for this grade yet.' : split?.reason || 'Not split.' };
+    }
+    return {
+      key: g.key, label: g.label, split: true, exact: split.exact, reliable: split.reliable, reason: split.reason || '',
+      cashGallons: split.cashGallons, creditGallons: split.creditGallons,
+      cashAmount: split.cashAmount, creditAmount: split.creditAmount,
+      cashPrice: split.cashGallons ? split.cashAmount / split.cashGallons : null,
+      creditPrice: split.creditGallons ? split.creditAmount / split.creditGallons : null,
+      cashProfit: split.cashAmount - split.cashGallons * g.cost,
+      creditProfit: split.creditAmount - split.creditGallons * g.cost,
+    };
+  });
+  const splitRows = levels.filter((l) => l.split);
+  const tenders = day ? tenderTypes(settings, day).map((t) => ({ key: t.key, label: t.label, amount: num(day.tenders?.[t.key]) })).filter((t) => t.amount) : [];
+  const inside = Object.values(groups)
+    .map((g) => {
+      const sales = num(day?.departments?.[g.key]);
+      return { key: g.key, label: g.label, sales, marginPct: g.marginPct, profit: has(g.marginPct) ? sales * num(g.marginPct) / 100 : null };
+    })
+    .filter((g) => g.sales);
+  const insideSales = total(inside.map((g) => g.sales));
+  const insideProfit = total(inside.map((g) => g.profit || 0));
+  const lotterySales = num(day?.lottery?.instant) + num(day?.lottery?.online);
+  const lotteryProfit = commissionRate == null ? null : lotterySales * commissionRate;
+  const cardSales = num(day?.tenders?.credit) + num(day?.tenders?.debit) + num(day?.tenders?.fleet);
+  const fuelProfit = margin?.profit ?? null;
+  return {
+    date,
+    hasReport: Boolean(day),
+    grades,
+    gallons: total(grades.map((g) => g.gallons)),
+    fuelSales: total(grades.map((g) => g.amount)) + num(day?.fuel?.manual),
+    manualFuel: num(day?.fuel?.manual),
+    fuelProfit,
+    perGallon: margin?.perGallon ?? null,
+    fuelComplete: margin ? margin.complete : true,
+    levels,
+    cashGallons: total(splitRows.map((l) => l.cashGallons)),
+    creditGallons: total(splitRows.map((l) => l.creditGallons)),
+    cashFuelProfit: splitRows.length ? total(splitRows.map((l) => l.cashProfit)) : null,
+    creditFuelProfit: splitRows.length ? total(splitRows.map((l) => l.creditProfit)) : null,
+    splitComplete: splitRows.length === levels.length,
+    splitEstimated: splitRows.some((l) => !l.exact),
+    tenders,
+    tenderTotal: total(tenders.map((t) => t.amount)),
+    inside, insideSales, insideProfit,
+    insideComplete: inside.every((g) => g.profit != null),
+    lotterySales, lotteryProfit,
+    grossProfit: (fuelProfit || 0) + insideProfit + (lotteryProfit || 0),
+    cardSales,
+    cardFees: feeRate == null ? null : cardSales * feeRate,
+    personalCost: margin?.personalCost || 0,
+  };
+}
+
 export function monthProfit(month, days, settings, { priceChanges = [], expenses = [], maintenance = [] } = {}) {
   const { start, end } = monthBounds(month);
   const dates = Object.keys(days).filter((d) => d >= start && d <= end).sort();
@@ -699,9 +783,13 @@ export function monthProfit(month, days, settings, { priceChanges = [], expenses
   let personalGallons = 0;
   let personalCost = 0;
   const groups = Object.fromEntries(settings.departments.filter((d) => (d.type || 'inside') === 'inside').map((d) => [d.key, { ...d, sales: 0 }]));
+  const feeRate = has(settings.cards?.feePct) ? num(settings.cards.feePct) / 100 : null;
+  const commissionRate = has(settings.lottery?.commissionPct) ? num(settings.lottery.commissionPct) / 100 : null;
+  const daily = [];
   for (const date of dates) {
     const day = days[date];
     const margin = dayMargin(day, gradeCosts(costsByDate[date], settings));
+    daily.push(dayProfitRow(date, day, margin, groups, feeRate, commissionRate, settings, priceChanges));
     if (margin.profit != null) { fuelProfit += margin.profit; fuelKnown = true; }
     const personal = personalFuel(day);
     personalGallons += personal.drawGallons;
@@ -735,6 +823,24 @@ export function monthProfit(month, days, settings, { priceChanges = [], expenses
   const fromFuel = expenseTotal - insideProfit - (lotteryProfit || 0);
   const breakEvenPerDay = perGallon && perGallon > 0 ? Math.max(0, fromFuel) / perGallon / daysInMonth : null;
 
+  // Day by day: monthly bills spread evenly over the month; one-off expenses and repairs on
+  // the day they're dated (a dated expense on a day with no report still gets a row).
+  const billsPerDay = total(fixed.map((e) => e.amount)) / daysInMonth;
+  const dated = (date) => [
+    ...oneOff.filter((e) => e.day === date).map((e) => ({ label: categoryName(e.category), detail: [e.vendor, e.note].filter(Boolean).join(' · '), amount: num(e.amount) })),
+    ...repairs.filter((m) => m.day === date).map((m) => ({ label: 'Repairs', detail: [m.problem || m.action, m.vendor].filter(Boolean).join(' · '), amount: num(m.cost) })),
+  ];
+  for (const date of new Set([...oneOff.map((e) => e.day), ...repairs.map((m) => m.day)])) {
+    if (!days[date]) daily.push(dayProfitRow(date, null, null, groups, feeRate, commissionRate, settings, priceChanges));
+  }
+  for (const row of daily) {
+    row.expenses = dated(row.date);
+    row.expenseAmount = total(row.expenses.map((e) => e.amount));
+    row.bills = row.hasReport ? billsPerDay : 0;
+    row.net = row.grossProfit - (row.cardFees || 0) - row.expenseAmount - row.bills;
+  }
+  daily.sort((a, b) => a.date.localeCompare(b.date));
+
   return {
     month, start, end, dates, daysEntered: dates.length, daysInMonth,
     fuelProfit: fuelKnown ? fuelProfit : null, fuelGallons, perGallon,
@@ -743,6 +849,7 @@ export function monthProfit(month, days, settings, { priceChanges = [], expenses
     grossProfit,
     cardSales, cardFees, fixed, oneOff, byCategory, repairs, repairCost, expenseTotal, net,
     breakEvenPerDay, gallonsPerDay: dates.length ? fuelGallons / dates.length : null,
+    daily, billsPerDay,
     personalGallons, personalCost,
   };
 }

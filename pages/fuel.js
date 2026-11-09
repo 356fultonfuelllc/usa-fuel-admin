@@ -16,9 +16,14 @@ export function renderFuel(ctx, monthParam) {
   const { settings, days } = ctx;
   const now = calc.nowInNewYork();
   const changes = ctx.data.price_changes.slice().sort((a, b) => b.effectiveAt.localeCompare(a.effectiveAt));
-  const posted = calc.pricesAt(changes, now);
+  const logged = calc.pricesAt(changes, now);
   const costs = calc.gradeCosts(currentTankCosts(ctx), settings);
   const dates = Object.keys(days).sort();
+  const today = calc.todayInNewYork();
+  // What's on the pumps now: the latest report's prices, unless a newer change is logged.
+  const lastReport = dates.at(-1);
+  const posted = calc.defaultPrices(lastReport === today ? calc.addDays(today, 1) : today, days, changes);
+  const fromReport = lastReport && days[lastReport].prices && !(logged?.effectiveAt > `${lastReport}T23:59`);
   const month = monthParam || (dates.at(-1) || now).slice(0, 7);
   const { start, end } = calc.monthBounds(month);
 
@@ -62,7 +67,6 @@ export function renderFuel(ctx, monthParam) {
   });
   const anySplit = levels.some((l) => l.days);
   const feeSet = settings.cards?.feePct !== '' && settings.cards?.feePct != null;
-  const today = calc.todayInNewYork();
   const outlook = settings.tanks.map((tank) => calc.tankOutlook(tank, days, settings, today));
   const orderPill = (o) => ({ order: pill('bad', 'Order now'), soon: pill('warn', 'Order soon'), ok: pill('good', 'OK'), unknown: pill('idle', 'No reading') }[o.state]);
   const monthGallons = rows.reduce((a, r) => a + r.gallons, 0);
@@ -107,7 +111,7 @@ export function renderFuel(ctx, monthParam) {
     <section class="card">
       <div class="card__head">
         <h2 class="card__title">Right now</h2>
-        <span class="muted">${posted ? `Prices posted ${dateTimeLabel(posted.effectiveAt)}` : 'No prices logged yet'}</span>
+        <span class="muted">${fromReport ? `Prices from the ${mediumDate(lastReport)} report` : logged ? `Prices posted ${dateTimeLabel(logged.effectiveAt)}` : 'No prices logged yet'}</span>
       </div>
       <div class="table-wrap"><table class="table">
         <thead><tr><th>Grade</th><th class="num">Posted credit</th><th class="num">Posted cash</th><th class="num">Your cost</th><th class="num">Margin (credit)</th><th class="num">Margin (cash)</th></tr></thead>

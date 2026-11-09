@@ -315,7 +315,7 @@ img { display: block; max-width: 100%; }
 .date-jump input { height: 40px; padding: 0 10px; border: 1.5px solid var(--line); border-radius: 9px; font: inherit; color: var(--ink); }
 
 /* Fuel grid: grade | gallons | sales */
-.grade-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 10px 14px; }
+.grade-grid { display: grid; grid-template-columns: 110px repeat(4, minmax(0, 1fr)); align-items: center; gap: 10px 14px; }
 .grade-grid__head { color: var(--muted); font-size: .76rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .grade-grid__label { font-weight: 700; }
 .grade-grid .fld__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -412,6 +412,22 @@ img { display: block; max-width: 100%; }
 .pnl__sub td { padding-left: 26px; color: var(--muted); font-size: .86rem; }
 .pnl__total th { font-size: 1rem; }
 .split-details { margin-top: 12px; }
+.neg { color: var(--bad-ink); }
+.table--by-day { font-size: .88rem; }
+.table--by-day > thead th, .table--by-day > thead th.num { white-space: normal; vertical-align: bottom; }
+.table--by-day .muted { font-size: .8rem; }
+.table--by-day th, .table--by-day td { padding-left: 6px; padding-right: 6px; }
+.table--by-day .by-day__row td { border-bottom: 0; padding-bottom: 2px; }
+.table--by-day .by-day__row td:first-child, .table--by-day tfoot th:first-child { white-space: nowrap; }
+.table--by-day .by-day__detail td { padding-top: 0; }
+.table--by-day tbody tr.by-day__detail:last-child td { border-bottom: 0; }
+.day-detail { display: grid; gap: 14px; margin: 8px 0 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.day-detail p { margin: 0; }
+.table--day { font-size: .86rem; }
+.table--day th, .table--day td { padding: 5px 8px; }
+@media (min-width: 1100px) { .day-detail { grid-template-columns: 1fr 1fr; } .day-detail > table:first-child, .day-detail > p, .day-detail__wide { grid-column: 1 / -1; } }
+.day-detail__wide, .day-detail__stack { display: grid; gap: 14px; align-content: start; }
+.day-detail__wide { gap: 6px; }
 
 /* Compliance calendar and inspections */
 .compliance-table td { vertical-align: top; }
@@ -543,6 +559,7 @@ img { display: block; max-width: 100%; }
 .report-grid > section { overflow-x: auto; }
 @media (min-width: 800px) { .report-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .report-grid__wide { grid-column: 1 / -1; }
+@media (min-width: 800px) { .report-grid__fuel { grid-column: 1 / -1; } }
 .report-grid h2 { margin-bottom: 6px; color: var(--navy); font-size: .95rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
 .table--report th,
 .table--report td { padding: 6px 8px; }
@@ -705,6 +722,7 @@ img { display: block; max-width: 100%; }
   .report-kpi strong { font-size: 1.1rem; }
   .report-grid { grid-template-columns: repeat(3, 1fr); gap: 12px 18px; }
   .report-grid section { overflow: visible; break-inside: avoid; }
+  .report-grid__fuel { grid-column: span 2; }
   .report-grid h2 { font-size: .85rem; }
   .table--report th,
   .table--report td { padding: 2px 6px; }

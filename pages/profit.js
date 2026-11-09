@@ -11,6 +11,150 @@ function nextMonth(month) {
 
 const categoryLabel = (key) => (calc.EXPENSE_CATEGORIES.find(([k]) => k === key) || [key, 'Other'])[1];
 
+const sum = (rows, key) => rows.reduce((t, r) => t + (r[key] || 0), 0);
+const signed = (v) => (v == null ? '—' : v < 0 ? `<span class="neg">${fmt.money(v)}</span>` : fmt.money(v));
+const minus = (v) => (v ? `−${fmt.money(v)}` : fmt.money(0));
+
+// One day's full breakdown, opened from the by-day list.
+function dayDetail(r, settings) {
+  const fee = settings.cards?.feePct;
+  const fuel = r.grades.length ? `<table class="table table--day">
+      <thead><tr><th>Fuel</th><th class="num">Gallons</th><th class="num">Sold at</th><th class="num">Cost</th><th class="num">Margin / gal</th><th class="num">Profit</th></tr></thead>
+      <tbody>${r.grades.map((g) => `<tr>
+        <td>${esc(g.label)}</td>
+        <td class="num">${fmt.number(g.gallons, 1)}</td>
+        <td class="num">${fmt.ppg(g.price)}</td>
+        <td class="num">${g.cost == null ? '<span class="muted">no cost</span>' : fmt.ppg(g.cost)}</td>
+        <td class="num">${g.margin == null ? '—' : fmt.cents(g.margin)}</td>
+        <td class="num">${signed(g.profit)}</td>
+      </tr>`).join('')}</tbody>
+      <tfoot><tr><th>Fuel profit</th><th class="num">${fmt.number(r.gallons, 1)}</th><th></th><th></th><th class="num">${r.perGallon == null ? '—' : fmt.cents(r.perGallon)}</th><th class="num">${signed(r.fuelProfit)}</th></tr></tfoot>
+    </table>
+    ${r.manualFuel ? `<p class="muted">Manual fuel sales of ${fmt.money(r.manualFuel)} have no gallons, so they aren't in fuel profit.</p>` : ''}
+    ${r.fuelComplete ? '' : `<p>${pill('warn', 'Partial')} A grade has no cost yet. Add the delivery cost on that day's report, or a starting cost in <a href="#/settings">Settings</a>.</p>`}`
+    : '<p class="muted">No fuel sold.</p>';
+
+  const est = (l) => (l.exact ? '' : ` <span class="muted" title="${esc(l.reason || 'Worked out from the day\'s gallons, dollars and posted prices.')}">est.</span>`);
+  const levels = r.levels.length ? `<table class="table table--day">
+      <thead><tr><th>Cash vs credit</th><th class="num">Cash gal</th><th class="num">Cash price</th><th class="num">Cash profit</th><th class="num">Credit gal</th><th class="num">Credit price</th><th class="num">Credit profit</th></tr></thead>
+      <tbody>${r.levels.map((l) => l.split ? `<tr>
+        <td>${esc(l.label)}${est(l)}</td>
+        <td class="num">${fmt.number(l.cashGallons, 1)}</td>
+        <td class="num">${fmt.ppg(l.cashPrice)}</td>
+        <td class="num">${signed(l.cashProfit)}</td>
+        <td class="num">${fmt.number(l.creditGallons, 1)}</td>
+        <td class="num">${fmt.ppg(l.creditPrice)}</td>
+        <td class="num">${signed(l.creditProfit)}</td>
+      </tr>` : `<tr><td>${esc(l.label)}</td><td colspan="6" class="muted">${esc(l.reason)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr>
+        <th>Total</th>
+        <th class="num">${fmt.number(r.cashGallons, 1)}</th>
+        <th class="num">${r.cashGallons + r.creditGallons ? `${Math.round((r.cashGallons / (r.cashGallons + r.creditGallons)) * 100)}%` : ''}</th>
+        <th class="num">${signed(r.cashFuelProfit)}</th>
+        <th class="num">${fmt.number(r.creditGallons, 1)}</th>
+        <th class="num">${r.cashGallons + r.creditGallons ? `${Math.round((r.creditGallons / (r.cashGallons + r.creditGallons)) * 100)}%` : ''}</th>
+        <th class="num">${signed(r.creditFuelProfit)}</th>
+      </tr></tfoot>
+    </table>
+    <p class="muted">Credit profit here is before card fees; the day's card fees come off below. "est." means the split was worked out from the day's gallons, dollars and posted prices instead of typed from Commander.</p>` : '';
+
+  const payments = r.tenders.length ? `<table class="table table--day">
+      <thead><tr><th>Payments</th><th class="num">Amount</th><th class="num">Share</th></tr></thead>
+      <tbody>${r.tenders.map((t) => `<tr><td>${esc(t.label)}</td><td class="num">${fmt.money(t.amount)}</td><td class="num">${r.tenderTotal ? `${(t.amount / r.tenderTotal * 100).toFixed(1)}%` : '—'}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><th>Total</th><th class="num">${fmt.money(r.tenderTotal)}</th><th class="num">Cards ${r.tenderTotal ? `${(r.cardSales / r.tenderTotal * 100).toFixed(1)}%` : '—'}</th></tr></tfoot>
+    </table>` : '';
+
+  const inside = r.inside.length ? `<table class="table table--day">
+      <thead><tr><th>Inside</th><th class="num">Sales</th><th class="num">Margin</th><th class="num">Profit</th></tr></thead>
+      <tbody>${r.inside.map((g) => `<tr>
+        <td>${esc(g.label)}</td>
+        <td class="num">${fmt.money(g.sales)}</td>
+        <td class="num">${g.profit == null ? '<span class="muted">not set</span>' : `${esc(g.marginPct)}%`}</td>
+        <td class="num">${g.profit == null ? '—' : fmt.money(g.profit)}</td>
+      </tr>`).join('')}</tbody>
+      <tfoot><tr><th>Inside profit</th><th class="num">${fmt.money(r.insideSales)}</th><th></th><th class="num">${fmt.money(r.insideProfit)}</th></tr></tfoot>
+    </table>` : '';
+
+  const lines = [
+    ['Fuel profit', signed(r.fuelProfit)],
+    ['Inside profit', fmt.money(r.insideProfit)],
+    ...(r.lotterySales ? [[`Lottery commission <span class="muted">(${fmt.money(r.lotterySales)} sales)</span>`, fmt.money(r.lotteryProfit)]] : []),
+    ['<strong>Gross profit</strong>', `<strong>${signed(r.grossProfit)}</strong>`],
+    [`− Card fees <span class="muted">(${fmt.money(r.cardSales)} card sales${fee ? ` × ${esc(fee)}%` : ''})</span>`, r.cardFees == null ? '<span class="muted">rate not set</span>' : minus(r.cardFees)],
+    ...(r.bills ? [['− Monthly bills <span class="muted">(share for one day)</span>', minus(r.bills)]] : []),
+    ...r.expenses.map((e) => [`− ${esc(e.label)}${e.detail ? ` <span class="muted">(${esc(e.detail)})</span>` : ''}`, minus(e.amount)]),
+    ['<strong>Net for the day</strong>', `<strong>${signed(r.net)}</strong>`],
+  ];
+  return `<div class="day-detail">
+    ${fuel}
+    ${levels ? `<div class="day-detail__wide">${levels}</div>` : ''}
+    ${inside ? `<div>${inside}</div>` : ''}
+    <div class="day-detail__stack">
+      ${payments}
+      <table class="table table--day pnl"><tbody>${lines.map(([label, value]) => `<tr><td>${label}</td><td class="num">${value}</td></tr>`).join('')}</tbody></table>
+    </div>
+    ${r.personalCost ? `<p class="muted">Personal fuel taken at cost: ${fmt.money(r.personalCost)} (owner's draw, not in profit).</p>` : ''}
+    ${r.hasReport ? `<p class="no-print"><a class="link" href="#/report/${r.date}">Open the ${mediumDate(r.date)} report</a></p>` : '<p class="muted">No report entered for this day; only its expenses are shown.</p>'}
+  </div>`;
+}
+
+function byDaySection(p, settings, month) {
+  const rows = p.daily;
+  if (!rows.length) return `<section class="card"><h2 class="card__title">By day</h2><p class="empty">No days entered for ${monthLabel(month)}.</p></section>`;
+  const lottery = rows.some((r) => r.lotteryProfit);
+  const expenses = rows.some((r) => r.expenseAmount || r.bills);
+  const feesSet = rows.every((r) => r.cardFees != null);
+  const gallons = sum(rows, 'gallons');
+  const fuelProfit = sum(rows, 'fuelProfit');
+  const best = rows.filter((r) => r.hasReport).reduce((b, r) => (b == null || r.net > b.net ? r : b), null);
+  const worst = rows.filter((r) => r.hasReport).reduce((w, r) => (w == null || r.net < w.net ? r : w), null);
+  const cols = 8 + (lottery ? 1 : 0) + (expenses ? 1 : 0);
+
+  return `<section class="card">
+    <div class="card__head">
+      <h2 class="card__title">By day</h2>
+      <span class="muted">${best && worst && best !== worst ? `Best ${mediumDate(best.date)} (${fmt.money(best.net)}) · worst ${mediumDate(worst.date)} (${fmt.money(worst.net)})` : ''}</span>
+    </div>
+    <div class="table-wrap"><table class="table table--by-day">
+      <thead><tr>
+        <th>Date</th><th class="num">Gallons</th><th class="num">Cash fuel</th><th class="num">Credit fuel</th><th class="num">Fuel profit</th><th class="num">Inside profit</th>
+        ${lottery ? '<th class="num">Lottery</th>' : ''}
+        <th class="num">Gross profit</th><th class="num">Card fees</th>
+        ${expenses ? '<th class="num">Expenses</th>' : ''}
+        <th class="num">Net</th>
+      </tr></thead>
+      <tbody>${rows.map((r) => `<tr class="by-day__row">
+        <td>${mediumDate(r.date)}</td>
+        <td class="num">${fmt.number(Math.round(r.gallons))}</td>
+        <td class="num">${signed(r.cashFuelProfit)}${r.splitComplete ? '' : '<span class="muted">*</span>'}${r.cashGallons ? `<br><span class="muted">${fmt.number(Math.round(r.cashGallons))} gal</span>` : ''}</td>
+        <td class="num">${signed(r.creditFuelProfit)}${r.splitComplete ? '' : '<span class="muted">*</span>'}${r.creditGallons ? `<br><span class="muted">${fmt.number(Math.round(r.creditGallons))} gal</span>` : ''}</td>
+        <td class="num">${signed(r.fuelProfit)}${r.fuelComplete ? '' : '<span class="muted">*</span>'}${r.perGallon == null ? '' : `<br><span class="muted">${fmt.cents(r.perGallon)}/gal</span>`}</td>
+        <td class="num">${fmt.money(r.insideProfit)}${r.insideComplete ? '' : '<span class="muted">*</span>'}</td>
+        ${lottery ? `<td class="num">${fmt.money(r.lotteryProfit)}</td>` : ''}
+        <td class="num">${signed(r.grossProfit)}</td>
+        <td class="num">${r.cardFees == null ? '—' : minus(r.cardFees)}</td>
+        ${expenses ? `<td class="num">${minus(r.expenseAmount + r.bills)}</td>` : ''}
+        <td class="num"><strong>${signed(r.net)}</strong></td>
+      </tr>
+      <tr class="by-day__detail"><td colspan="${cols}"><details class="row-details"><summary>Breakdown for ${mediumDate(r.date)}</summary>${dayDetail(r, settings)}</details></td></tr>`).join('')}</tbody>
+      <tfoot><tr>
+        <th>${rows.length} day${rows.length === 1 ? '' : 's'}</th>
+        <th class="num">${fmt.number(Math.round(gallons))}</th>
+        <th class="num">${signed(sum(rows, 'cashFuelProfit'))}<br><span class="muted">${fmt.number(Math.round(sum(rows, 'cashGallons')))} gal</span></th>
+        <th class="num">${signed(sum(rows, 'creditFuelProfit'))}<br><span class="muted">${fmt.number(Math.round(sum(rows, 'creditGallons')))} gal</span></th>
+        <th class="num">${signed(fuelProfit)}${gallons ? `<br><span class="muted">${fmt.cents(fuelProfit / gallons)}/gal</span>` : ''}</th>
+        <th class="num">${fmt.money(sum(rows, 'insideProfit'))}</th>
+        ${lottery ? `<th class="num">${fmt.money(sum(rows, 'lotteryProfit'))}</th>` : ''}
+        <th class="num">${signed(sum(rows, 'grossProfit'))}</th>
+        <th class="num">${feesSet ? minus(sum(rows, 'cardFees')) : '—'}</th>
+        ${expenses ? `<th class="num">${minus(sum(rows, 'expenseAmount') + sum(rows, 'bills'))}</th>` : ''}
+        <th class="num">${signed(sum(rows, 'net'))}</th>
+      </tr></tfoot>
+    </table></div>
+    <p class="muted">${rows.some((r) => !r.fuelComplete || !r.insideComplete || !r.splitComplete) ? '* Partial: a fuel grade has no cost or no cash/credit split, or a department has no margin % set. ' : ''}Cash and credit fuel profit are before card fees; credit is split from the cash/credit gallons typed on each day, or worked out from that day's gallons, dollars and posted prices. Card fees are each day's credit, debit and fleet sales${settings.cards?.feePct ? ` × ${esc(settings.cards.feePct)}%` : ''}.${p.billsPerDay ? ` Monthly bills are spread evenly at ${fmt.money(p.billsPerDay)} a day over days with a report, so these days add up to less than the month's net until every day is entered.` : ''} One-off expenses and repairs show on the day they're dated.</p>
+  </section>`;
+}
+
 export function renderProfit(ctx, monthParam) {
   const { settings, days } = ctx;
   const today = calc.todayInNewYork();
@@ -73,6 +217,8 @@ export function renderProfit(ctx, monthParam) {
       </table></div>
       <p class="muted">Monthly bills are set in <a href="#/settings">Settings</a>. Break-even is the gallons a day that would cover expenses after inside and lottery profit, at this month's fuel profit per gallon.</p>
     </section>
+
+    ${byDaySection(p, settings, month)}
 
     <section class="card">
       <h2 class="card__title">One-off expenses</h2>

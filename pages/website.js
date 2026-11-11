@@ -3,7 +3,7 @@
 import * as calc from '../calc.js';
 import { esc, pill, toast, field, selectField, newId, mediumDate } from '../ui.js';
 
-// The example deals built into the home page. They show until deals are saved here.
+// Sample deals the owner can start from. The website shows no deals until some are saved here.
 const EXAMPLE_DEALS = [
   { tag: 'Fill-up perk', title: "Fill up. Coffee's on us.", text: 'Pump 10 gallons or more and grab a free hot coffee inside.', featured: true },
   { tag: 'Every week', title: 'Combo of the Week', text: 'A new snack and drink combo every week. Ask at the register.' },
@@ -81,10 +81,10 @@ export function renderWebsite(ctx) {
     <section class="card">
       <div class="card__head">
         <h2 class="card__title">Deals</h2>
-        <span class="muted">${content.deals ? `${liveDeals.length} showing today` : 'Website shows its examples'}</span>
+        <span class="muted">${content.deals ? `${liveDeals.length} showing today` : 'Hidden on the website'}</span>
       </div>
       <p class="card__hint">Shown in the Deals section of the home page, in this order. If none are showing, the section is hidden.</p>
-      ${content.deals ? '' : `<div class="banner">${pill('idle', 'Not set up')}<p>Until you save deals here, the website shows the 4 example deals it was built with (free coffee with a 10-gallon fill-up, Combo of the Week, Coffee Club, Grand Opening). <button class="btn btn--ghost btn--small" type="button" data-use-examples>Start from those examples</button></p></div>`}
+      ${content.deals ? '' : `<div class="banner">${pill('idle', 'Not set up')}<p>The Deals section is hidden on the website until you save at least one deal here. <button class="btn btn--ghost btn--small" type="button" data-use-examples>Start from sample deals</button></p></div>`}
       <form data-deals novalidate>
         <div data-deal-list></div>
         <div class="button-row form-actions">

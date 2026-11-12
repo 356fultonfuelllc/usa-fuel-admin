@@ -13,6 +13,7 @@ import { renderAccounts, renderAccount, renderStatement } from './pages/accounts
 import { renderWebsite } from './pages/website.js';
 import { renderProfit } from './pages/profit.js';
 import { renderTrends } from './pages/trends.js';
+import { renderItems } from './pages/items.js';
 import { renderExport } from './pages/export.js';
 import { renderCompliance, complianceAlerts } from './pages/compliance.js';
 import { renderInspections, renderInspection, inspectionAlerts } from './pages/inspections.js';
@@ -25,7 +26,7 @@ let settings;
 let days = {};
 let reconNotes = {};
 // Records kept in lists (see store.list) plus the website content.
-const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance'];
+const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance', 'item_reports'];
 let extra = { ...Object.fromEntries(COLLECTIONS.map((c) => [c, []])), content: {} };
 let unsaved = false;
 let currentHash = location.hash || '#/';
@@ -77,6 +78,7 @@ const routes = [
   [/^#\/website$/, () => renderWebsite(ctx), 'website'],
   [/^#\/profit(?:\/(\d{4}-\d{2}))?$/, (month) => renderProfit(ctx, month), 'profit'],
   [/^#\/trends$/, () => renderTrends(ctx), 'trends'],
+  [/^#\/items$/, () => renderItems(ctx), 'items'],
   [/^#\/export$/, () => renderExport(ctx), 'export'],
   [/^#\/compliance$/, () => renderCompliance(ctx), 'compliance'],
   [/^#\/inspections$/, () => renderInspections(ctx), 'inspections'],
@@ -452,6 +454,7 @@ function blankDay(date) {
     // The card batch number counts up by one each day.
     register: { batchNumber: /^\d+$/.test(previous?.register?.batchNumber ?? '') ? String(Number(previous.register.batchNumber) + 1) : '' },
     cash: {},
+    payouts: [],
     cashiers: [],
     personal: [],
     // Start inventory is filled in from yesterday's ending volume; it can be changed.
@@ -468,6 +471,14 @@ function upgradeDraft(draft, date) {
   draft.prices = calc.dayPrices(draft, extra.price_changes, date);
   draft.cashiers ||= [];
   draft.personal ||= [];
+  // Older days have one pay outs total; it becomes the first line of the list.
+  if (!Array.isArray(draft.payouts)) {
+    const old = draft.cash?.payOuts;
+    draft.payouts = old !== '' && old != null && Number(old)
+      ? [{ to: '', reason: 'other', amount: String(old), note: 'Entered as one total before pay outs were itemized' }]
+      : [];
+  }
+  if (draft.cash) delete draft.cash.payOuts;
   for (const tank of settings.tanks) {
     const reading = (draft.tanks ||= {})[tank.key] ||= {};
     if (!Array.isArray(reading.deliveries)) {
@@ -521,6 +532,23 @@ function personalRows(rows) {
     <div class="personal-row__mode">${selectField({ name: `personal.${i}.mode`, label: 'How it was handled', value: calc.personalMode(p), options: calc.PERSONAL_MODES })}</div>
     <button class="btn btn--ghost btn--small" type="button" data-remove-personal="${i}" aria-label="Remove personal fuel ${i + 1}">Remove</button>
   </div>`).join('');
+}
+
+function payoutRows(rows) {
+  return rows.map((p, i) => `<div class="payout-row" data-payout="${i}">
+    ${field({ name: `payouts.${i}.to`, label: 'Paid to', type: 'text', value: p.to, placeholder: 'Who got the cash', attrs: 'list="payee-list"' })}
+    ${selectField({ name: `payouts.${i}.reason`, label: 'What for', value: p.reason || 'other', options: calc.PAYOUT_REASONS })}
+    ${field({ name: `payouts.${i}.amount`, label: 'Amount', prefix: '$', value: p.amount })}
+    ${field({ name: `payouts.${i}.note`, label: 'Invoice # / note', type: 'text', value: p.note })}
+    <button class="btn btn--ghost btn--small" type="button" data-remove-payout="${i}" aria-label="Remove pay out ${i + 1}">Remove</button>
+  </div>`).join('');
+}
+
+// Everyone paid out before, so names autocomplete the same way each time.
+function payeeOptions() {
+  const names = new Set();
+  for (const day of Object.values(days)) for (const p of calc.payoutList(day)) if (p.to) names.add(p.to);
+  return [...names].sort((a, b) => a.localeCompare(b)).map((n) => `<option value="${esc(n)}"></option>`).join('');
 }
 
 function cashierRows(cashiers) {
@@ -669,11 +697,18 @@ function renderEntry(dateParam) {
           <div class="fields">
             ${field({ name: 'cash.startingBank', label: 'Starting bank', prefix: '$', value: value('cash.startingBank'), placeholder: settings.startingBank === '' ? 'Set in Settings' : String(settings.startingBank), hint: 'From Settings. Type only to override today.' })}
             ${field({ name: 'cash.payIns', label: 'Pay ins', prefix: '$', value: value('cash.payIns') })}
-            ${field({ name: 'cash.payOuts', label: 'Pay outs', prefix: '$', value: value('cash.payOuts'), hint: 'Vendors, lottery winners and other cash paid out' })}
             ${field({ name: 'cash.cashBack', label: 'Debit cash back', prefix: '$', value: value('cash.cashBack'), hint: settings.cashBackNetted ? 'Not subtracted: Settings says the cash total already has it taken out' : '' })}
             ${field({ name: 'cash.safeDrops', label: 'Safe drops total', prefix: '$', value: value('cash.safeDrops') })}
             ${field({ name: 'cash.counted', label: 'Cash counted', prefix: '$', value: value('cash.counted'), hint: 'Drawer plus all safe drops' })}
             ${field({ name: 'cash.deposit', label: 'Bank deposit', prefix: '$', value: value('cash.deposit') })}
+          </div>
+          <h3 class="card__sub">Pay outs</h3>
+          <p class="card__hint">Every bit of cash paid out of the drawer: lottery winners, vendors paid on delivery, supplies, repairs. One line per payment.</p>
+          <div class="payouts" data-payouts>${payoutRows(draft.payouts)}</div>
+          <datalist id="payee-list">${payeeOptions()}</datalist>
+          <div class="button-row payouts__foot">
+            <button class="btn btn--ghost btn--small" type="button" data-add-payout>Add pay out</button>
+            <span class="muted" data-payout-total></span>
           </div>
           <h3 class="card__sub">By cashier</h3>
           <div class="cashiers" data-cashiers>${cashierRows(draft.cashiers)}</div>
@@ -720,6 +755,8 @@ function renderEntry(dateParam) {
 
   function refresh() {
     const s = calc.summarizeDay(draft, settings);
+    const payoutTotal = view.querySelector('[data-payout-total]');
+    payoutTotal.textContent = s.payouts.length ? `Total paid out ${fmt.money(s.payOuts)} (${s.payouts.length} ${s.payouts.length === 1 ? 'payment' : 'payments'})` : 'No pay outs today';
     const merged = { ...days, [date]: draft };
     const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, merged, settings), calc.tankRunning(date, tank, merged, settings)]);
     const checks = calc.dayChecks(date, merged, settings, { houseCharges: calc.houseChargesOn(date, extra.house_charges) });
@@ -850,6 +887,17 @@ function renderEntry(dateParam) {
       refresh();
       return;
     }
+    const addPayout = event.target.closest('[data-add-payout]');
+    const removePayout = event.target.closest('[data-remove-payout]');
+    if (addPayout || removePayout) {
+      if (addPayout) draft.payouts.push({ to: '', reason: 'lottery', amount: '', note: '' });
+      else draft.payouts.splice(Number(removePayout.dataset.removePayout), 1);
+      view.querySelector('[data-payouts]').innerHTML = payoutRows(draft.payouts);
+      if (addPayout) view.querySelector(`[name="payouts.${draft.payouts.length - 1}.to"]`).focus();
+      markUnsaved();
+      refresh();
+      return;
+    }
     const addCashier = event.target.closest('[data-add-cashier]');
     const removeCashier = event.target.closest('[data-remove-cashier]');
     if (addCashier || removeCashier) {
@@ -867,6 +915,13 @@ function renderEntry(dateParam) {
     draft.date = date;
     draft.cashiers = draft.cashiers.filter((c) => Object.values(c).some((v) => String(v ?? '').trim() !== ''));
     draft.personal = draft.personal.filter((p) => Number(p.gallons) > 0);
+    draft.payouts = draft.payouts.filter((p) => String(p.amount ?? '').trim() !== '' || String(p.to ?? '').trim() !== '');
+    const missing = draft.payouts.findIndex((p) => String(p.amount ?? '').trim() === '' || !Number.isFinite(Number(p.amount)));
+    if (missing >= 0) {
+      alert(`Pay out ${missing + 1}${draft.payouts[missing].to ? ` (${draft.payouts[missing].to})` : ''} needs an amount.`);
+      view.querySelector(`[name="payouts.${missing}.amount"]`)?.focus();
+      return;
+    }
     for (const tank of settings.tanks) {
       draft.tanks[tank.key].deliveries = draft.tanks[tank.key].deliveries.filter((d) => Object.values(d).some((v) => String(v ?? '').trim() !== ''));
     }
@@ -1053,6 +1108,7 @@ function renderReport(date) {
               <tr><td>+ Cash sales</td><td class="num">${fmt.money(s.cashSales)}</td></tr>
               <tr><td>+ Pay ins</td><td class="num">${fmt.money(s.payIns)}</td></tr>
               <tr><td>− Pay outs</td><td class="num">${fmt.money(s.payOuts)}</td></tr>
+              ${s.payouts.map((p) => `<tr class="report-subrow"><td>${esc(p.to || 'Not named')} · ${esc(calc.payoutReasonLabel(p.reason))}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''}</td><td class="num">${fmt.money(p.amount)}</td></tr>`).join('')}
               ${s.lotteryPayouts ? `<tr><td>− Lottery winners paid</td><td class="num">${fmt.money(s.lotteryPayouts)}</td></tr>` : ''}
               <tr><td>− Debit cash back${settings.cashBackNetted ? ' (already netted)' : ''}</td><td class="num">${settings.cashBackNetted ? '—' : fmt.money(s.cashBack)}</td></tr>
             </tbody>

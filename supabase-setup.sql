@@ -145,6 +145,10 @@ create table if not exists public.inspections (
 create table if not exists public.maintenance (
   id text primary key, day date not null, data jsonb not null, updated_at timestamptz not null default now()
 );
+-- Imported Commander PLU and Deal reports (Item sales page). day = last day the report covers.
+create table if not exists public.item_reports (
+  id text primary key, day date not null, data jsonb not null, updated_at timestamptz not null default now()
+);
 create index if not exists expenses_day on public.expenses (day);
 create index if not exists inspections_day on public.inspections (day);
 
@@ -176,7 +180,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance'] loop
+  foreach t in array array['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance', 'item_reports'] loop
     execute format('drop trigger if exists %I on public.%I', t || '_history', t);
     execute format('create trigger %I after update or delete on public.%I for each row execute function public.keep_change_history()', t || '_history', t);
     execute format('alter table public.%I enable row level security', t);

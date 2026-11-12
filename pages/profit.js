@@ -155,6 +155,56 @@ function byDaySection(p, settings, month) {
   </section>`;
 }
 
+// Cash paid out of the drawer this month, from the daily reports.
+function payoutsSection(days, month) {
+  const { start, end } = calc.monthBounds(month);
+  const lines = [];
+  for (const date of Object.keys(days).filter((d) => d >= start && d <= end).sort()) {
+    const list = calc.payoutList(days[date]);
+    if (list.length) list.forEach((p) => lines.push({ date, ...p }));
+    else if (Number(days[date].cash?.payOuts)) lines.push({ date, to: '', reason: 'unitemized', amount: Number(days[date].cash.payOuts), note: '' });
+  }
+  const label = (key) => (key === 'unitemized' ? 'Not itemized' : calc.payoutReasonLabel(key));
+  const totalOf = (list) => list.reduce((a, p) => a + p.amount, 0);
+  const groupBy = (key) => Object.values(lines.reduce((acc, p) => {
+    const k = key(p);
+    (acc[k] ||= { name: k, count: 0, amount: 0 }).count += 1;
+    acc[k].amount += p.amount;
+    return acc;
+  }, {})).sort((a, b) => b.amount - a.amount);
+  const all = totalOf(lines);
+  const byReason = groupBy((p) => label(p.reason));
+  const byPayee = groupBy((p) => p.to || 'Not named').slice(0, 10);
+  const share = (v) => (all ? `${fmt.number((v / all) * 100)}%` : '');
+
+  return `<section class="card">
+    <div class="card__head">
+      <h2 class="card__title">Cash pay outs</h2>
+      <span class="muted">${fmt.money(all)} · ${lines.length} payment${lines.length === 1 ? '' : 's'}</span>
+    </div>
+    <p class="card__hint">Cash paid out of the drawer, from each day's Cash section. These balance the drawer; they aren't added to the expenses above.</p>
+    ${lines.length ? `<div class="payout-summary">
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>What for</th><th class="num">Payments</th><th class="num">Amount</th><th class="num">Share</th></tr></thead>
+        <tbody>${byReason.map((r) => `<tr><td>${esc(r.name)}</td><td class="num">${r.count}</td><td class="num">${fmt.money(r.amount)}</td><td class="num">${share(r.amount)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Paid to (top 10)</th><th class="num">Payments</th><th class="num">Amount</th></tr></thead>
+        <tbody>${byPayee.map((r) => `<tr><td>${esc(r.name)}</td><td class="num">${r.count}</td><td class="num">${fmt.money(r.amount)}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>
+    <details class="details">
+      <summary>Every pay out (${lines.length})</summary>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Date</th><th>Paid to</th><th>What for</th><th>Invoice # / note</th><th class="num">Amount</th></tr></thead>
+        <tbody>${lines.slice().reverse().map((p) => `<tr>
+          <td><a class="link" href="#/report/${p.date}">${mediumDate(p.date)}</a></td><td>${esc(p.to || '—')}</td><td>${esc(label(p.reason))}</td><td>${esc(p.note)}</td><td class="num">${fmt.money(p.amount)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </details>` : `<p class="empty">No pay outs entered for ${monthLabel(month)}.</p>`}
+  </section>`;
+}
+
 export function renderProfit(ctx, monthParam) {
   const { settings, days } = ctx;
   const today = calc.todayInNewYork();
@@ -241,7 +291,9 @@ export function renderProfit(ctx, monthParam) {
           <td class="actions no-print"><button class="btn btn--ghost btn--small" type="button" data-delete-expense="${esc(e.id)}">Delete</button></td>
         </tr>`).join('')}</tbody>
       </table></div>` : `<p class="empty">No one-off expenses in ${monthLabel(month)}.</p>`}
-    </section>`;
+    </section>
+
+    ${payoutsSection(days, month)}`;
 
   ctx.view.querySelector('[data-print]').addEventListener('click', () => window.print());
   const form = ctx.view.querySelector('[data-expense-form]');

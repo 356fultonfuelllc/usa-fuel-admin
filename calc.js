@@ -111,6 +111,30 @@ export function personalFuel(day) {
   };
 }
 
+// Cash paid out of the drawer, one entry per payment: who was paid and what for.
+export const PAYOUT_REASONS = [
+  ['lottery', 'Lottery winner'],
+  ['merchandise', 'Merchandise / vendor'],
+  ['supplies', 'Store supplies'],
+  ['repairs', 'Repairs'],
+  ['wages', 'Wages'],
+  ['refund', 'Customer refund'],
+  ['other', 'Other'],
+];
+export const payoutReasonLabel = (key) => (PAYOUT_REASONS.find(([k]) => k === key) || [, 'Other'])[1];
+
+// Itemized pay outs. Older days have one total in cash.payOuts and no list.
+export function payoutList(day) {
+  return (day?.payouts || [])
+    .filter((p) => p && has(p.amount))
+    .map((p) => ({ to: String(p.to || '').trim(), reason: p.reason || 'other', amount: num(p.amount), note: String(p.note || '').trim() }));
+}
+
+export function payoutTotal(day) {
+  const list = payoutList(day);
+  return list.length ? cents(total(list.map((p) => p.amount))) : num(day?.cash?.payOuts);
+}
+
 export function summarizeDay(day, settings) {
   const fuel = GRADES.map((grade) => {
     const gallons = num(day.fuel?.[grade.key]?.gallons);
@@ -155,7 +179,8 @@ export function summarizeDay(day, settings) {
   const startingBank = startingBankOverride ? num(cash.startingBank) : num(settings.startingBank);
   const cashSales = num(day.tenders?.cash);
   const cashBack = num(cash.cashBack);
-  const expectedCash = startingBank + cashSales + num(cash.payIns) - num(cash.payOuts)
+  const payOuts = payoutTotal(day);
+  const expectedCash = startingBank + cashSales + num(cash.payIns) - payOuts
     - (settings.cashBackNetted ? 0 : cashBack) - lotteryPayouts;
   const countedCash = has(cash.counted) ? num(cash.counted) : null;
   const overShort = countedCash == null ? null : cents(countedCash - expectedCash);
@@ -173,7 +198,7 @@ export function summarizeDay(day, settings) {
     batchTotal: has(register.batchTotal) ? num(register.batchTotal) : null,
     commanderSales: has(register.totalSales) ? num(register.totalSales) : null,
     commanderPayments: has(register.totalPayments) ? num(register.totalPayments) : null,
-    startingBank, startingBankOverride, cashSales, payIns: num(cash.payIns), payOuts: num(cash.payOuts), cashBack,
+    startingBank, startingBankOverride, cashSales, payIns: num(cash.payIns), payOuts, payouts: payoutList(day), cashBack,
     safeDrops: has(cash.safeDrops) ? num(cash.safeDrops) : null,
     cashiers: (day.cashiers || []).filter((c) => c && (c.name || has(c.safeDrops) || has(c.overShort))),
     expectedCash: cents(expectedCash), countedCash, overShort,

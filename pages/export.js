@@ -108,6 +108,26 @@ function expenses(ctx, from, to) {
   return [rows[0], ...body, ...(body.length ? [['Total', '', '', '', '', '', round2(total)]] : [])];
 }
 
+function payouts(ctx, from, to) {
+  const rows = [['Date', 'Paid to', 'What for', 'Invoice # / note', 'Amount']];
+  let total = 0;
+  for (const date of datesIn(ctx.days, from, to)) {
+    const day = ctx.days[date];
+    const list = calc.payoutList(day);
+    if (list.length) {
+      for (const p of list) {
+        rows.push([date, p.to, calc.payoutReasonLabel(p.reason), p.note, round2(p.amount)]);
+        total += p.amount;
+      }
+    } else if (num(day.cash?.payOuts)) {
+      rows.push([date, '', 'Not itemized', 'Entered as one total', round2(num(day.cash.payOuts))]);
+      total += num(day.cash.payOuts);
+    }
+  }
+  if (rows.length > 1) rows.push(['Total', '', '', '', round2(total)]);
+  return rows;
+}
+
 function deliveries(ctx, from, to) {
   const { settings, days } = ctx;
   const rows = [['Date', 'Tank', 'Product', 'Invoice gallons', 'TLS measured increase', 'Landed cost per gallon', 'Invoice total (est.)', 'Ticket / BOL']];
@@ -171,6 +191,7 @@ const FILES = [
   { key: 'daily', label: 'Daily sales', hint: 'One row per day: fuel by grade, inside sales by group, lottery, tax, payments by type, cash, deposit and estimated fuel profit. Totals at the bottom.', build: dailySales },
   { key: 'summary', label: 'Monthly profit summary', hint: 'One row per month, as on the Monthly profit page. Inside profit and card fees are estimates from the rates in Settings.', build: monthlySummary },
   { key: 'expenses', label: 'Expenses', hint: 'Monthly bills, one-off expenses and repair costs.', build: expenses },
+  { key: 'payouts', label: 'Cash pay outs', hint: 'Every cash pay out from the drawer: who was paid, what for and how much.', build: payouts },
   { key: 'deliveries', label: 'Fuel deliveries', hint: 'Each delivery with invoice gallons, landed cost and ticket number.', build: deliveries },
   { key: 'deposits', label: 'Bank deposits', hint: 'Each day\'s deposit, when it was made and cleared, and any difference.', build: deposits },
   { key: 'house', label: 'House accounts', hint: 'Charges and payments on fleet/house accounts.', build: houseAccounts },

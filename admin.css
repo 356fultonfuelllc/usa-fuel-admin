@@ -779,3 +779,14 @@ img { display: block; max-width: 100%; }
 }
 .payout-summary { display: grid; gap: 16px; margin-bottom: 12px; }
 @media (min-width: 900px) { .payout-summary { grid-template-columns: 1fr 1fr; align-items: start; } }
+
+/* Item sales: day-by-day grids */
+.table--days { font-size: .86rem; }
+.table--days th,
+.table--days td { padding: 7px 8px; white-space: nowrap; }
+.table--days thead th.num { line-height: 1.15; }
+.table--days .sticky-col { position: sticky; left: 0; z-index: 1; min-width: 180px; max-width: 240px; white-space: normal; background: var(--white); box-shadow: 1px 0 0 var(--line); }
+.table--days tbody tr:hover td { background: var(--bg); }
+.fld--inline { display: flex; align-items: center; gap: 8px; }
+.fld--inline .fld__label { margin: 0; }
+.day-tools { max-width: 320px; margin-bottom: 10px; }

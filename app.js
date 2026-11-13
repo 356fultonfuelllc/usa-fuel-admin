@@ -13,7 +13,7 @@ import { renderAccounts, renderAccount, renderStatement } from './pages/accounts
 import { renderWebsite } from './pages/website.js';
 import { renderProfit } from './pages/profit.js';
 import { renderTrends } from './pages/trends.js';
-import { renderItems } from './pages/items.js';
+import { renderItems, renderItemHistory } from './pages/items.js';
 import { renderExport } from './pages/export.js';
 import { renderCompliance, complianceAlerts } from './pages/compliance.js';
 import { renderInspections, renderInspection, inspectionAlerts } from './pages/inspections.js';
@@ -79,6 +79,8 @@ const routes = [
   [/^#\/profit(?:\/(\d{4}-\d{2}))?$/, (month) => renderProfit(ctx, month), 'profit'],
   [/^#\/trends$/, () => renderTrends(ctx), 'trends'],
   [/^#\/items$/, () => renderItems(ctx), 'items'],
+  [/^#\/item\/([^/]+)$/, (key) => renderItemHistory(ctx, 'item', decodeURIComponent(key)), 'items'],
+  [/^#\/deal\/([^/]+)$/, (key) => renderItemHistory(ctx, 'deal', decodeURIComponent(key)), 'items'],
   [/^#\/export$/, () => renderExport(ctx), 'export'],
   [/^#\/compliance$/, () => renderCompliance(ctx), 'compliance'],
   [/^#\/inspections$/, () => renderInspections(ctx), 'inspections'],

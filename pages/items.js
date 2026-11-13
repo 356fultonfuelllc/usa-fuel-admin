@@ -80,6 +80,55 @@ function changeCell(change, isNew) {
 }
 
 const DEAL_TYPES = { combo: 'Combo', mix: 'Mix & match' };
+const itemKey = (i) => i.plu || i.name;
+const dealKey = (d) => `${d.type}:${d.number}`;
+const itemLink = (key, name) => `<a class="link" href="#/item/${encodeURIComponent(key)}">${esc(name)}</a>`;
+const dealLink = (key, name) => `<a class="link" href="#/deal/${encodeURIComponent(key)}">${esc(name)}</a>`;
+const dayHead = (d) => `${fmt.date(d, { weekday: 'short' })}<br>${fmt.date(d, { month: 'numeric', day: 'numeric' })}`;
+
+// Reports that cover exactly one day: the only ones that can be shown day by day.
+const dailyReports = (reports, from = '0000-00-00', to = '9999-99-99') => reports
+  .filter((r) => r.from === r.to && r.from >= from && r.to <= to)
+  .sort((a, b) => a.from.localeCompare(b.from));
+
+function dayByDaySection(daily, rows, kind, metric, partialCount) {
+  const isItems = kind === 'items';
+  const withData = daily.filter((r) => (isItems ? r.items?.length : r.deals?.length));
+  if (!withData.length) return '';
+  const field = isItems ? (metric === 'sales' ? 'sales' : 'qty') : (metric === 'sales' ? 'sales' : 'count');
+  const show = (v) => (field === 'sales' ? fmt.money(v) : fmt.number(v));
+  const byDay = withData.map((r) => {
+    const map = {};
+    for (const x of (isItems ? r.items : r.deals)) {
+      const key = isItems ? itemKey(x) : dealKey(x);
+      map[key] = (map[key] || 0) + (x[field] || 0);
+    }
+    return map;
+  });
+  const title = isItems ? 'Items day by day' : 'Deals day by day';
+  return `<section class="card">
+    <div class="card__head">
+      <h2 class="card__title">${title}</h2>
+      ${isItems ? selectField({ name: 'dayMetric', label: 'Show', value: metric, options: [['qty', 'Units sold'], ['sales', 'Dollar sales']] }).replace('<label class="fld">', '<label class="fld fld--inline" data-day-metric>') : ''}
+    </div>
+    <p class="card__hint">${isItems ? 'Exact' : 'Times sold'} ${isItems ? (field === 'sales' ? 'dollar sales' : 'units sold') : ''} for each day with a daily report. Click a name for its full history.${partialCount ? ' Weekly or monthly reports can\'t be split by day, so they\'re left out here.' : ''}</p>
+    ${isItems ? `<div class="day-tools no-print">${`<label class="fld"><span class="fld__label">Find an item</span><span class="fld__control"><input type="search" placeholder="Name or PLU" autocomplete="off" data-day-search></span></label>`}</div>` : ''}
+    <div class="table-wrap"><table class="table table--days" ${isItems ? 'data-day-table' : ''}>
+      <thead><tr><th class="sticky-col">${isItems ? 'Item' : 'Deal'}</th>${withData.map((r) => `<th class="num">${dayHead(r.from)}</th>`).join('')}<th class="num">Total</th></tr></thead>
+      <tbody>${rows.map((x, n) => {
+        const values = byDay.map((m) => m[x.key] || 0);
+        const total = values.reduce((a, v) => a + v, 0);
+        return `<tr${isItems && n >= 25 ? ' data-extra hidden' : ''}${isItems ? ` data-find="${esc(`${x.name} ${x.plu}`.toLowerCase())}"` : ''}>
+          <td class="sticky-col">${isItems ? itemLink(x.key, x.name) : dealLink(x.key, x.name)}${isItems ? `<br><span class="muted">${esc(x.plu)}</span>` : ''}</td>
+          ${values.map((v) => `<td class="num${v ? '' : ' muted'}">${v ? show(v) : '0'}</td>`).join('')}
+          <td class="num"><strong>${show(total)}</strong></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    ${isItems && rows.length > 25 ? `<div class="button-row no-print"><button class="btn btn--ghost btn--small" type="button" data-show-all-days>Show all ${rows.length} items</button></div>` : ''}
+  </section>`;
+}
+
 
 function importSection(today) {
   const yesterday = calc.addDays(today, -1);
@@ -150,6 +199,9 @@ export function renderItems(ctx) {
     return { pct: b ? rateChange(now[table][key][field], now.days, b[field], before.days) : null, isNew: before.days > 0 && !b };
   };
   const share = (v) => (salesTotal ? `${fmt.number((v / salesTotal) * 100, 1)}%` : '—');
+  const daily = dailyReports(reports, range.from, range.to);
+  const dayMetric = range.dayMetric === 'sales' ? 'sales' : 'qty';
+  const multiDay = now.reports.filter((r) => r.from !== r.to).length;
   const monthValue = range.from.endsWith('-01') && range.to === calc.monthBounds(range.from.slice(0, 7)).end ? range.from.slice(0, 7) : '';
 
   ctx.view.innerHTML = `
@@ -184,23 +236,25 @@ export function renderItems(ctx) {
       <div class="table-wrap"><table class="table">
         <thead><tr><th class="num">#</th><th>Item</th><th class="num">Units</th><th class="num">Sales</th><th class="num">Share of sales</th><th class="num">vs before</th></tr></thead>
         <tbody>${ranked.slice(0, 25).map((i, n) => { const c = change(i.key, rankKey, 'items'); return `<tr>
-          <td class="num muted">${n + 1}</td><td>${esc(i.name)}<br><span class="muted">${esc(i.plu)}</span></td>
+          <td class="num muted">${n + 1}</td><td>${itemLink(i.key, i.name)}<br><span class="muted">${esc(i.plu)}</span></td>
           <td class="num">${fmt.number(i.qty)}</td><td class="num">${fmt.money(i.sales)}</td><td class="num">${share(i.sales)}</td><td class="num">${changeCell(c.pct, c.isNew)}</td>
         </tr>`; }).join('')}</tbody>
       </table></div>
     </section>
+
+    ${dayByDaySection(daily, ranked, 'items', dayMetric, multiDay)}
 
     <section class="card">
       <h2 class="card__title">Slowest sellers</h2>
       <p class="card__hint">Items that sold, but the fewest. Candidates for less shelf space, a deal, or dropping.</p>
       <div class="table-wrap"><table class="table">
         <thead><tr><th>Item</th><th class="num">Units</th><th class="num">Sales</th></tr></thead>
-        <tbody>${slow.map((i) => `<tr><td>${esc(i.name)} <span class="muted">${esc(i.plu)}</span></td><td class="num">${fmt.number(i.qty)}</td><td class="num">${fmt.money(i.sales)}</td></tr>`).join('')}</tbody>
+        <tbody>${slow.map((i) => `<tr><td>${itemLink(i.key, i.name)} <span class="muted">${esc(i.plu)}</span></td><td class="num">${fmt.number(i.qty)}</td><td class="num">${fmt.money(i.sales)}</td></tr>`).join('')}</tbody>
       </table></div>
       ${stopped.length ? `<h3 class="card__sub">Sold before, none this time</h3>
       <div class="table-wrap"><table class="table">
         <thead><tr><th>Item</th><th class="num">Units before</th></tr></thead>
-        <tbody>${stopped.map((i) => `<tr><td>${esc(i.name)} <span class="muted">${esc(i.plu)}</span></td><td class="num">${fmt.number(i.qty)}</td></tr>`).join('')}</tbody>
+        <tbody>${stopped.map((i) => `<tr><td>${itemLink(i.key, i.name)} <span class="muted">${esc(i.plu)}</span></td><td class="num">${fmt.number(i.qty)}</td></tr>`).join('')}</tbody>
       </table></div>` : ''}
     </section>` : ''}
 
@@ -210,12 +264,14 @@ export function renderItems(ctx) {
       <div class="table-wrap"><table class="table">
         <thead><tr><th>Deal</th><th>Type</th><th class="num">Times sold</th><th class="num">Customers</th><th class="num">Sales</th><th class="num">Per day</th><th class="num">vs before</th></tr></thead>
         <tbody>${deals.map((d) => { const c = change(d.key, 'count', 'deals'); return `<tr>
-          <td>${esc(d.name)}</td><td>${DEAL_TYPES[d.type] || ''} #${esc(d.number)}</td>
+          <td>${dealLink(d.key, d.name)}</td><td>${DEAL_TYPES[d.type] || ''} #${esc(d.number)}</td>
           <td class="num">${fmt.number(d.count)}</td><td class="num">${fmt.number(d.customers)}</td><td class="num">${fmt.money(d.sales)}</td>
           <td class="num">${now.days ? fmt.number(d.count / now.days, 1) : '—'}</td><td class="num">${changeCell(c.pct, c.isNew)}</td>
         </tr>`; }).join('')}</tbody>
       </table></div>
     </section>` : ''}
+
+    ${dayByDaySection(daily, deals, 'deals', 'count', multiDay)}
 
     ${items.length ? `<section class="card">
       <details class="details">
@@ -223,7 +279,7 @@ export function renderItems(ctx) {
         ${field({ name: 'search', label: 'Find an item', type: 'search', placeholder: 'Name or PLU', attrs: 'data-item-search' })}
         <div class="table-wrap"><table class="table" data-all-items>
           <thead><tr><th>Item</th><th>PLU</th><th class="num">Units</th><th class="num">Sales</th></tr></thead>
-          <tbody>${items.slice().sort((a, b) => a.name.localeCompare(b.name)).map((i) => `<tr data-find="${esc(`${i.name} ${i.plu}`.toLowerCase())}"><td>${esc(i.name)}</td><td class="muted">${esc(i.plu)}</td><td class="num">${fmt.number(i.qty)}</td><td class="num">${fmt.money(i.sales)}</td></tr>`).join('')}</tbody>
+          <tbody>${items.slice().sort((a, b) => a.name.localeCompare(b.name)).map((i) => `<tr data-find="${esc(`${i.name} ${i.plu}`.toLowerCase())}"><td>${itemLink(i.key, i.name)}</td><td class="muted">${esc(i.plu)}</td><td class="num">${fmt.number(i.qty)}</td><td class="num">${fmt.money(i.sales)}</td></tr>`).join('')}</tbody>
         </table></div>
       </details>
     </section>` : ''}
@@ -257,6 +313,20 @@ export function renderItems(ctx) {
       view = { ...range, from: f.from.value, to: f.to.value };
     } else return;
     renderItems(ctx);
+  });
+
+  ctx.view.querySelector('[data-day-metric] select')?.addEventListener('change', (event) => {
+    view = { ...range, dayMetric: event.target.value };
+    renderItems(ctx);
+  });
+  const dayRows = () => [...ctx.view.querySelectorAll('[data-day-table] tbody tr')];
+  ctx.view.querySelector('[data-show-all-days]')?.addEventListener('click', (event) => {
+    dayRows().forEach((tr) => { tr.hidden = false; delete tr.dataset.extra; });
+    event.currentTarget.remove();
+  });
+  ctx.view.querySelector('[data-day-search]')?.addEventListener('input', (event) => {
+    const q = event.target.value.trim().toLowerCase();
+    dayRows().forEach((tr) => { tr.hidden = q ? !tr.dataset.find.includes(q) : 'extra' in tr.dataset; });
   });
 
   ctx.view.querySelector('[data-item-search]')?.addEventListener('input', (event) => {
@@ -342,4 +412,86 @@ export function renderItems(ctx) {
 
   // Keep a parsed report on screen across re-renders until it's saved or cancelled.
   if (pending) preview.innerHTML = previewHtml(pending, reports);
+}
+
+// ---- One item's (or one deal's) full history, day by day ----
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+export function renderItemHistory(ctx, kind, key) {
+  const isItem = kind === 'item';
+  const reports = ctx.data.item_reports.slice().sort((a, b) => b.to.localeCompare(a.to) || b.from.localeCompare(a.from));
+  const listOf = (r) => (isItem ? r.items : r.deals) || [];
+  const keyOf = isItem ? itemKey : dealKey;
+  const countField = isItem ? 'qty' : 'count';
+  const find = (r) => {
+    const matches = listOf(r).filter((x) => keyOf(x) === key);
+    if (!matches.length) return null;
+    return matches.reduce((t, x) => ({ name: x.name, plu: x.plu, number: x.number, type: x.type, count: t.count + (x[countField] || 0), sales: t.sales + (x.sales || 0), customers: t.customers + (x.customers || 0) }), { count: 0, sales: 0, customers: 0 });
+  };
+
+  // Every report that lists this kind of row: a day with none sold shows as 0.
+  const rows = reports.filter((r) => listOf(r).length).map((r) => ({ r, hit: find(r) })).filter((x) => x.hit || x.r.from === x.r.to);
+  const hits = rows.filter((x) => x.hit);
+  if (!hits.length) {
+    ctx.view.innerHTML = `${ctx.banner()}<header class="page-head"><div><p class="eyebrow">Item sales</p><h1>Not found</h1></div></header>
+      <section class="card"><p class="empty">No reports include this ${isItem ? 'item' : 'deal'}. <a class="link" href="#/items">Back to Item sales</a></p></section>`;
+    return;
+  }
+  const info = hits[0].hit;
+  const name = info.name;
+  const daily = rows.filter((x) => x.r.from === x.r.to);
+  const dailyCounts = daily.map((x) => ({ date: x.r.from, count: x.hit?.count || 0, sales: x.hit?.sales || 0, customers: x.hit?.customers || 0 }));
+  const totalCount = hits.reduce((a, x) => a + x.hit.count, 0);
+  const totalSales = hits.reduce((a, x) => a + x.hit.sales, 0);
+  const best = dailyCounts.slice().sort((a, b) => b.count - a.count)[0];
+  const perDay = dailyCounts.length ? dailyCounts.reduce((a, d) => a + d.count, 0) / dailyCounts.length : null;
+  const weekdays = WEEKDAYS.map((label, i) => {
+    const list = dailyCounts.filter((d) => new Date(`${d.date}T12:00:00Z`).getUTCDay() === i);
+    return { label, days: list.length, avg: list.length ? list.reduce((a, d) => a + d.count, 0) / list.length : null };
+  });
+  const topWeekday = weekdays.filter((w) => w.avg != null).sort((a, b) => b.avg - a.avg)[0];
+  const unit = isItem ? 'units' : 'times sold';
+  const subtitle = isItem ? `PLU ${esc(info.plu)}` : `${DEAL_TYPES[info.type] || 'Deal'} #${esc(info.number)}`;
+
+  ctx.view.innerHTML = `
+    ${ctx.banner()}
+    <header class="page-head">
+      <div><p class="eyebrow"><a class="link" href="#/items">Item sales</a> · ${subtitle}</p><h1>${esc(name)}</h1></div>
+      <div class="page-head__actions no-print"><a class="btn btn--ghost btn--small" href="#/items">← All items</a></div>
+    </header>
+
+    <section class="card">
+      <div class="tiles">
+        ${statTile(isItem ? 'Units sold' : 'Times sold', fmt.number(totalCount), '', `In ${hits.length} report${hits.length === 1 ? '' : 's'}`)}
+        ${statTile('Sales', fmt.money(totalSales), '', totalCount && isItem ? `Average ${fmt.money(totalSales / totalCount)} each` : '')}
+        ${statTile(`Average ${isItem ? 'units' : 'sold'} per day`, perDay == null ? '—' : fmt.number(perDay, 1), '', dailyCounts.length ? `Over ${dailyCounts.length} daily report${dailyCounts.length === 1 ? '' : 's'}` : 'Needs daily reports')}
+        ${statTile('Best day', best ? fmt.number(best.count) : '—', '', best ? mediumDate(best.date) : '')}
+      </div>
+    </section>
+
+    ${dailyCounts.length >= 7 ? `<section class="card">
+      <h2 class="card__title">By day of the week</h2>
+      <p class="card__hint">Average ${unit} on each weekday, from daily reports.${topWeekday ? ` Busiest: ${topWeekday.label}.` : ''}</p>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Day</th><th class="num">Days</th><th class="num">Average ${unit}</th></tr></thead>
+        <tbody>${weekdays.map((w) => `<tr><td>${w.label}</td><td class="num">${w.days}</td><td class="num">${w.avg == null ? '—' : fmt.number(w.avg, 1)}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </section>` : ''}
+
+    <section class="card">
+      <h2 class="card__title">Every report</h2>
+      <p class="card__hint">Newest first. Days with a daily report where it didn't sell show 0.</p>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Date</th><th class="num">${isItem ? 'Units' : 'Times sold'}</th><th class="num">Sales</th>${isItem ? '<th class="num">Average price</th>' : ''}<th class="num">Customers</th></tr></thead>
+        <tbody>${rows.map(({ r, hit }) => `<tr>
+          <td>${periodText(r)}${r.from !== r.to ? ' <span class="muted">(multi-day report)</span>' : ''}</td>
+          <td class="num${hit ? '' : ' muted'}">${fmt.number(hit?.count || 0)}</td>
+          <td class="num${hit ? '' : ' muted'}">${fmt.money(hit?.sales || 0)}</td>
+          ${isItem ? `<td class="num">${hit && hit.count ? fmt.money(hit.sales / hit.count) : '—'}</td>` : ''}
+          <td class="num">${hit && hit.customers ? fmt.number(hit.customers) : '—'}</td>
+        </tr>`).join('')}</tbody>
+        <tfoot><tr><th>Total</th><th class="num">${fmt.number(totalCount)}</th><th class="num">${fmt.money(totalSales)}</th>${isItem ? `<th class="num">${totalCount ? fmt.money(totalSales / totalCount) : '—'}</th>` : ''}<th></th></tr></tfoot>
+      </table></div>
+    </section>`;
 }

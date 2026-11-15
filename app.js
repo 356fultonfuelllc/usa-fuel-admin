@@ -20,6 +20,7 @@ import { renderInspections, renderInspection, inspectionAlerts } from './pages/i
 import { CHECKLISTS } from './pages/compliance-data.js';
 
 const view = document.getElementById('view');
+const DEFAULT_TITLE = document.title;
 const cloud = store.mode === 'cloud';
 
 let settings;
@@ -136,6 +137,8 @@ function route() {
     if (a.dataset.nav === section) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
+  // Pages that print (and save as PDF) set their own title; the PDF is named after it.
+  document.title = DEFAULT_TITLE;
   render(...hash.match(pattern).slice(1));
   view.focus({ preventScroll: true });
   window.scrollTo(0, 0);
@@ -1167,6 +1170,8 @@ function renderReport(date) {
       <footer class="report__foot">Printed ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}</footer>
     </article>`;
 
+  // "Save as PDF" names the file after the page title: USA Fuel & Mart - Daily Report 2026_11_13
+  document.title = `USA Fuel & Mart - Daily Report ${date.replaceAll('-', '_')}`;
   view.querySelector('[data-print]').addEventListener('click', () => window.print());
 }
 

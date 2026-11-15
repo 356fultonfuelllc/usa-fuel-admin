@@ -3,7 +3,7 @@
 
 import * as calc from '../calc.js';
 import { CHECKLISTS } from './compliance-data.js';
-import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, longDate } from '../ui.js';
+import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, longDate, setPrintTitle } from '../ui.js';
 
 const FREQUENCIES = ['daily', 'weekly', 'monthly', 'annual'];
 const STATUS = [['ok', 'OK'], ['problem', 'Problem'], ['na', 'N/A']];
@@ -201,7 +201,11 @@ export function renderInspection(ctx, { frequency, id }) {
     </form>`;
 
   const form = ctx.view.querySelector('[data-inspection-form]');
-  ctx.view.querySelector('[data-print]').addEventListener('click', () => window.print());
+  // The file name follows the date in the form, which can be changed before printing.
+  const printName = () => setPrintTitle(`${checklist.label} Inspection`, form.elements.day?.value || record.day);
+  printName();
+  form.elements.day?.addEventListener('change', printName);
+  ctx.view.querySelector('[data-print]').addEventListener('click', () => { printName(); window.print(); });
   form.addEventListener('input', () => {
     ctx.markUnsaved();
     const status = form.querySelector('[data-status]');

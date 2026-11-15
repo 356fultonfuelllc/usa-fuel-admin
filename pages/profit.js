@@ -2,7 +2,7 @@
 // expenses and repairs from the maintenance log.
 
 import * as calc from '../calc.js';
-import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, monthLabel, statTile } from '../ui.js';
+import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, monthLabel, statTile, setPrintTitle } from '../ui.js';
 
 function nextMonth(month) {
   const [y, m] = month.split('-').map(Number);
@@ -295,6 +295,7 @@ export function renderProfit(ctx, monthParam) {
 
     ${payoutsSection(days, month)}`;
 
+  setPrintTitle('Monthly Profit', month);
   ctx.view.querySelector('[data-print]').addEventListener('click', () => window.print());
   const form = ctx.view.querySelector('[data-expense-form]');
   form.addEventListener('submit', async (event) => {

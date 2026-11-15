@@ -5,7 +5,7 @@ import * as calc from './calc.js';
 import { makeSample, makeSampleExtras, SAMPLE_START_COSTS } from './sample.js';
 import {
   usd, fmt, longDate, mediumDate, shortDate, slashDate, periodLabel, esc, getPath, setPath,
-  pill, toast, field, selectField, attempt, statTile, deltaLine,
+  pill, toast, field, selectField, attempt, statTile, deltaLine, setPrintTitle,
 } from './ui.js';
 import { renderFuel } from './pages/fuel.js';
 import { renderDeposits } from './pages/deposits.js';
@@ -1170,8 +1170,7 @@ function renderReport(date) {
       <footer class="report__foot">Printed ${new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}</footer>
     </article>`;
 
-  // "Save as PDF" names the file after the page title: USA Fuel & Mart - Daily Report 2026_11_13
-  document.title = `USA Fuel & Mart - Daily Report ${date.replaceAll('-', '_')}`;
+  setPrintTitle('Daily Report', date);
   view.querySelector('[data-print]').addEventListener('click', () => window.print());
 }
 
@@ -1306,6 +1305,7 @@ function renderWorksheets(start) {
     <p class="intro no-print">${periodLabel(start)}. One worksheet per tank; printing puts each on its own page. Notes you type below save automatically.</p>
     ${results.map(worksheet).join('')}`;
 
+  setPrintTitle(`10-Day Reconciliation ${start.replaceAll('-', '_')} to ${calc.addDays(start, 9).replaceAll('-', '_')}`);
   view.querySelector('[data-print]').addEventListener('click', () => window.print());
 
   const saveNote = async (key, fieldName, value) => {

@@ -107,6 +107,12 @@ export function deltaLine(current, previous, upIsGood = true, label = 'vs previo
   return `<p class="tile__delta tile__delta--${tone}">${change > 0 ? '▲' : change < 0 ? '▼' : '■'} ${fmt.number(Math.abs(change) * 100, 1)}% ${label}</p>`;
 }
 
+// "Save as PDF" names the file after the page title, so printable pages set one.
+const underscored = (date) => date.replaceAll('-', '_');
+export function setPrintTitle(name, date) {
+  document.title = `USA Fuel & Mart - ${name}${date ? ` ${underscored(date)}` : ''}`.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export const newId = () => (crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
 
 // Reads a form's named inputs into a plain object (dotted names become nested).

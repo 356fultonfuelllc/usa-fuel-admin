@@ -2,7 +2,7 @@
 // Net 15 statements broken out by truck and driver.
 
 import * as calc from '../calc.js';
-import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, shortDate, longDate, monthLabel, statTile, usd } from '../ui.js';
+import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, shortDate, longDate, monthLabel, statTile, usd, setPrintTitle } from '../ui.js';
 
 const PRODUCTS = calc.PRODUCTS;
 const productLabel = (key) => PRODUCTS.find((p) => p.key === key)?.label || key;
@@ -487,5 +487,6 @@ export function renderStatement(ctx, id, month) {
       </footer>
     </article>`;
 
+  setPrintTitle(`Statement ${account.name || 'House account'}`, month);
   ctx.view.querySelector('[data-print]').addEventListener('click', () => window.print());
 }

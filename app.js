@@ -590,9 +590,12 @@ function renderEntry(dateParam) {
   const importBanner = draft.import?.status === 'needs_review'
     ? `<section class="card import-banner">${pill('warn', 'Imported from the Commander')}<p>Pulled from the register${draft.import.period ? ` (period ${esc(draft.import.period)})` : ''}. Check it, add ${esc(commander.OWNER_FIELDS.join(', '))}, then <strong>Save day</strong>.</p>${draft.import.flags?.length ? `<ul class="import-flags">${draft.import.flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}</section>`
     : '';
-  const diffs = exists && cmdr.days[date] && !draft.import ? commander.differences(days[date], cmdr.days[date], settings) : [];
+  const diffs = exists && cmdr.days[date] && draft.import?.status !== 'needs_review' ? commander.differences(days[date], cmdr.days[date], settings) : [];
   const diffBanner = diffs.length
-    ? `<section class="card import-banner">${pill('bad', `Commander data differs (${diffs.length})`)}<div class="table-wrap"><table class="table"><thead><tr><th></th><th class="num">Saved</th><th class="num">Commander</th></tr></thead><tbody>${diffs.map((x) => `<tr><td>${esc(x.label)}</td><td class="num">${esc(x.saved)}</td><td class="num">${esc(x.commander)}</td></tr>`).join('')}</tbody></table></div><p class="muted">Your saved numbers are never changed automatically.</p></section>`
+    ? `<section class="card import-banner" data-diff-banner>${pill('bad', `Commander data differs (${diffs.length})`)}<div class="table-wrap"><table class="table"><thead><tr><th></th><th class="num">Saved</th><th class="num">Commander</th></tr></thead><tbody>${diffs.map((x) => `<tr><td>${esc(x.label)}</td><td class="num">${esc(x.saved)}</td><td class="num">${esc(x.commander)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="muted">Your saved numbers are never changed automatically.</p>
+      <div class="button-row" data-correct-step="1"><button class="btn btn--ghost btn--small" type="button" data-correct>Use the Commander's numbers</button></div>
+      <div class="button-row" data-correct-step="2" hidden><span>Replace the register numbers above (and the tank readings) with the Commander's? Cash counted, deposit, pay outs, invoices, prices and notes stay as you typed them. The old version is kept in history.</span><button class="btn btn--primary btn--small" type="button" data-correct-confirm>Replace</button><button class="btn btn--ghost btn--small" type="button" data-correct-cancel>Cancel</button></div></section>`
     : '';
   const value = (path) => getPath(draft, path);
   const tc = settings.volumeBasis === 'tc';
@@ -979,6 +982,26 @@ function renderEntry(dateParam) {
   view.querySelector('[data-date-jump]').addEventListener('change', (event) => {
     if (event.target.value) location.hash = `#/day/${event.target.value}`;
   });
+
+  const banner = view.querySelector('[data-diff-banner]');
+  if (banner) {
+    const step = (n) => banner.querySelectorAll('[data-correct-step]').forEach((el) => { el.hidden = el.dataset.correctStep !== String(n); });
+    banner.querySelector('[data-correct]').addEventListener('click', () => step(2));
+    banner.querySelector('[data-correct-cancel]').addEventListener('click', () => step(1));
+    banner.querySelector('[data-correct-confirm]').addEventListener('click', async (event) => {
+      if (unsaved && !confirm('You have unsaved changes on this page. Replace with the Commander numbers anyway?')) return;
+      event.currentTarget.disabled = true;
+      const corrected = commander.correctFromCommander(days[date], cmdr.days[date], settings);
+      if (!(await attempt(() => store.saveDay(corrected), "Couldn't save the corrected day."))) {
+        event.currentTarget.disabled = false;
+        return;
+      }
+      days[date] = corrected;
+      unsaved = false;
+      toast(`${mediumDate(date)} now uses the Commander's numbers`);
+      renderEntry(date);
+    });
+  }
 
   refresh();
 }

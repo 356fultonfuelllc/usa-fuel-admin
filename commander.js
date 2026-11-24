@@ -38,8 +38,8 @@ function sameReading(t) {
   return t.tls.volume != null && t.end != null && Math.abs(Number(t.tls.volume) - Number(t.end)) <= 0.5;
 }
 
-// Fills blank end heights (inches) on a saved day from the tank monitor, only where the
-// saved end volume is the same reading. Returns the updated day, or null if nothing to fill.
+// Fills blank end heights (inches) and water on a saved day from the tank monitor, only where
+// the saved end volume is the same reading. Returns the updated day, or null if nothing to fill.
 export function fillInches(day, cmdr, settings) {
   const d = cmdr?.data;
   if (!day || !d) return null;
@@ -50,12 +50,12 @@ export function fillInches(day, cmdr, settings) {
     const code = Object.keys(TANK_ROLES).find((k) => TANK_ROLES[k] === tank.role);
     const t = d.tanks?.[code];
     const reading = next.tanks?.[tank.key];
-    if (!t || !reading || !sameReading(t) || t.tls.height == null) continue;
-    if (reading.endInches !== undefined && reading.endInches !== '' && reading.endInches !== null) continue;
+    if (!t || !reading || !sameReading(t)) continue;
     const savedEnd = reading[tc ? 'endTc' : 'endGallons'];
     if (savedEnd === '' || savedEnd == null || Math.abs(Number(savedEnd) - Number(t.end)) > 0.5) continue;
-    reading.endInches = str(t.tls.height);
-    changed = true;
+    const blank = (v) => v === undefined || v === null || v === '';
+    if (blank(reading.endInches) && t.tls.height != null) { reading.endInches = str(t.tls.height); changed = true; }
+    if (blank(reading.water) && t.tls.water != null) { reading.water = str(t.tls.water); changed = true; }
   }
   return changed ? next : null;
 }
@@ -142,6 +142,66 @@ export function applyToDraft(draft, cmdr, settings) {
   return { draft, flags };
 }
 
+// The owner asked for this: replace the numbers the register reports on a saved day with the
+// Commander's, keeping every owner field (cash counted, deposit, pay outs, personal fuel,
+// cashiers, invoice gallons / cost / ticket, prices, notes, prepared by).
+export function correctFromCommander(day, cmdr, settings) {
+  const d = cmdr.data || {};
+  const next = structuredClone(day);
+  const tc = settings.volumeBasis === 'tc';
+  next.fuel ||= {};
+  for (const [code, grade] of Object.entries(GRADE_KEYS)) {
+    const f = d.fuel?.[code];
+    if (f) next.fuel[grade] = { ...(next.fuel[grade] || {}), gallons: str(f.gallons), amount: str(f.sales), cashGallons: str(f.cash_gallons) };
+    for (const level of ['cash', 'credit']) {
+      next.prices ||= { cash: {}, credit: {} };
+      next.prices[level] ||= {};
+      if ((next.prices[level][grade] ?? '') === '' && f?.[`${level}_price_status`] === 'confirmed') next.prices[level][grade] = String(f[`${level}_price`]);
+    }
+  }
+  next.fuel.manual = str(d.categories?.manual_fuel ?? 0);
+  next.departments ||= {};
+  for (const category of Object.keys(CATEGORY_LABELS)) {
+    const key = groupKeyFor(category, settings);
+    if (key && d.categories?.[category] != null) next.departments[key] = str(d.categories[category]);
+  }
+  next.tax = str(d.sales_tax);
+  next.customers = str(d.customer_count);
+  next.counts = { ...(next.counts || {}), noSales: str(d.no_sale_count), voids: str(d.void_count), refunds: str(d.refunds) };
+  next.tenders = { ...(next.tenders || {}), cash: str(d.mop?.CASH), credit: str(d.cards?.credit), debit: str(d.cards?.debit), fleet: str(d.cards?.fleet) };
+  next.register = { ...(next.register || {}), batchTotal: str(d.cards?.batch_total), totalSales: str(d.commander_total), totalPayments: str(d.commander_total) };
+  next.cash = { ...(next.cash || {}), payIns: str(d.pay_ins), cashBack: str(d.cash_back), safeDrops: str(d.safe_drops) };
+  for (const tank of settings.tanks) {
+    const code = Object.keys(TANK_ROLES).find((k) => TANK_ROLES[k] === tank.role);
+    const t = d.tanks?.[code];
+    if (!t) continue;
+    const reading = (next.tanks ||= {})[tank.key] ||= { deliveries: [] };
+    reading.time = t.reading_time || reading.time || '';
+    reading[tc ? 'endTc' : 'endGallons'] = str(t.end);
+    reading.pumped = str(t.pumped);
+    if ((reading.start ?? '') === '' && t.start != null) reading.start = str(t.start);
+    if (sameReading(t)) {
+      if (t.tls.height != null) reading.endInches = str(t.tls.height);
+      if (t.tls.water != null) reading.water = str(t.tls.water);
+    }
+    // Deliveries: the TLS measured gallons go on the owner's delivery lines (invoice, cost
+    // and ticket stay as typed); a delivery the owner didn't enter is added with those blank.
+    const measured = (d.deliveries || []).filter((x) => x.tank === code);
+    const lines = Array.isArray(reading.deliveries) ? reading.deliveries : calc.deliveriesOf(reading).map((x) => ({ ...x }));
+    measured.forEach((x, i) => {
+      if (lines[i]) lines[i] = { ...lines[i], measured: str(x.tls_gallons) };
+      else lines.push({ invoiceGallons: '', measured: str(x.tls_gallons), cost: '', ticket: '' });
+    });
+    reading.deliveries = lines;
+    delete reading.delivered;
+    delete reading.cost;
+    delete reading.ticket;
+  }
+  next.import = { ...(next.import || {}), source: next.import?.source || 'manual', correctedFromCommander: new Date().toISOString(), period: cmdr.period_name || d.period_name || '' };
+  if (next.import.status === 'needs_review') next.import.status = 'reviewed';
+  return next;
+}
+
 // What differs between a saved day and the Commander's numbers for it.
 export function differences(day, cmdr, settings) {
   const d = cmdr?.data;
@@ -186,7 +246,7 @@ export function dayStatus(day, cmdr, settings) {
   if (day.import?.status === 'needs_review') return { tone: 'warn', label: 'Needs review', title: 'Imported from the Commander. Check it and add the owner fields, then Save day.' };
   const diffs = differences(day, cmdr, settings);
   if (diffs.length) return { tone: 'bad', label: `Differs (${diffs.length})`, title: diffs.map((x) => `${x.label}: saved ${x.saved}, Commander ${x.commander}`).join('\n') };
-  return { tone: 'good', label: day.import ? 'Imported' : 'Matches', title: 'Saved numbers match the Commander.' };
+  return { tone: 'good', label: day.import?.source === 'commander' ? 'Imported' : 'Matches', title: 'Saved numbers match the Commander.' };
 }
 
 // Item-sales reports built from the Commander's daily item and deal rows, in the shape the

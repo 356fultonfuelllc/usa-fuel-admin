@@ -81,7 +81,7 @@ function snapshotHtml(ctx, snap, lastWeek) {
     const volume = t.tls?.volume ?? t.end;
     const outlook = calc.tankOutlook(tank, days, settings, today);
     const supply = outlook.perDay && volume != null ? volume / outlook.perDay : null;
-    return `<tr><td>${esc(tank.product)}</td><td class="num">${fmt.number(volume ?? null)}</td><td class="num">${tank.capacity ? `${fmt.number((volume / Number(tank.capacity)) * 100)}%` : '—'}</td><td class="num">${supply == null ? '—' : fmt.number(supply, 1)}</td><td class="muted">${t.tls?.time ? clockTime(t.tls.time) : esc(t.reading_time || '')}</td></tr>`;
+    return `<tr><td>${esc(tank.product)}</td><td class="num">${fmt.number(volume ?? null)}</td><td class="num">${t.tls?.height != null ? `${fmt.number(Number(t.tls.height), 2)}″` : '—'}</td><td class="num">${tank.capacity ? `${fmt.number((volume / Number(tank.capacity)) * 100)}%` : '—'}</td><td class="num">${supply == null ? '—' : fmt.number(supply, 1)}</td><td class="muted">${t.tls?.time ? clockTime(t.tls.time) : esc(t.reading_time || '')}</td></tr>`;
   }).join('');
 
   const categories = Object.entries(CATEGORY_LABELS).filter(([k]) => Number(d.categories?.[k] || 0)).map(([k, label]) => `<tr><td>${label}</td><td class="num">${fmt.money(Number(d.categories[k]))}</td></tr>`).join('');
@@ -136,8 +136,8 @@ function snapshotHtml(ctx, snap, lastWeek) {
     <section class="card">
       <h2 class="card__title">Tanks</h2>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Tank</th><th class="num">Gallons</th><th class="num">Full</th><th class="num">Days of supply</th><th>Reading</th></tr></thead>
-        <tbody>${tankRows || '<tr><td colspan="5" class="muted">No tank reading in this snapshot</td></tr>'}</tbody>
+        <thead><tr><th>Tank</th><th class="num">Gallons</th><th class="num">Inches</th><th class="num">Full</th><th class="num">Days of supply</th><th>Reading</th></tr></thead>
+        <tbody>${tankRows || '<tr><td colspan="6" class="muted">No tank reading in this snapshot</td></tr>'}</tbody>
       </table></div>
       <p class="muted">Days of supply use the last 7 days' average sales, as on the Fuel page.</p>
     </section>`;

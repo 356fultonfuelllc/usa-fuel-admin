@@ -30,6 +30,36 @@ function timeLabel(iso) {
   return iso && iso.length >= 16 ? iso.slice(11, 16) : '';
 }
 
+// The tank monitor's reading (height, water) belongs to the end-of-day volume when it was
+// taken at the same time, or shows the same gallons.
+function sameReading(t) {
+  if (!t?.tls) return false;
+  if (t.tls.time && t.end_time) return t.tls.time === t.end_time;
+  return t.tls.volume != null && t.end != null && Math.abs(Number(t.tls.volume) - Number(t.end)) <= 0.5;
+}
+
+// Fills blank end heights (inches) on a saved day from the tank monitor, only where the
+// saved end volume is the same reading. Returns the updated day, or null if nothing to fill.
+export function fillInches(day, cmdr, settings) {
+  const d = cmdr?.data;
+  if (!day || !d) return null;
+  const tc = settings.volumeBasis === 'tc';
+  let changed = false;
+  const next = structuredClone(day);
+  for (const tank of settings.tanks) {
+    const code = Object.keys(TANK_ROLES).find((k) => TANK_ROLES[k] === tank.role);
+    const t = d.tanks?.[code];
+    const reading = next.tanks?.[tank.key];
+    if (!t || !reading || !sameReading(t) || t.tls.height == null) continue;
+    if (reading.endInches !== undefined && reading.endInches !== '' && reading.endInches !== null) continue;
+    const savedEnd = reading[tc ? 'endTc' : 'endGallons'];
+    if (savedEnd === '' || savedEnd == null || Math.abs(Number(savedEnd) - Number(t.end)) > 0.5) continue;
+    reading.endInches = str(t.tls.height);
+    changed = true;
+  }
+  return changed ? next : null;
+}
+
 // Fills a blank draft (from the day form's own blankDay) with what the Commander recorded.
 // Owner fields stay blank. Returns { draft, flags }.
 export function applyToDraft(draft, cmdr, settings) {
@@ -76,7 +106,10 @@ export function applyToDraft(draft, cmdr, settings) {
     reading[tc ? 'endTc' : 'endGallons'] = str(t.end);
     if (tc) flags.push(`${tank.product}: the Commander gives gross volume; Settings uses temperature-corrected. Check the end volume.`);
     reading.pumped = str(t.pumped);
-    if (t.tls?.water != null) reading.water = str(t.tls.water);
+    if (sameReading(t)) {
+      if (t.tls.height != null) reading.endInches = str(t.tls.height);
+      if (t.tls.water != null) reading.water = str(t.tls.water);
+    }
     if (reading.start !== '' && t.start != null && Math.abs(Number(reading.start) - Number(t.start)) > 0.5) {
       flags.push(`${tank.product}: start ${fmt.number(Number(reading.start))} (from the previous day) but the TLS says ${fmt.number(t.start)}.`);
     }

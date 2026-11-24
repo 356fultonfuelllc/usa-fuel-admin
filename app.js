@@ -1689,6 +1689,23 @@ async function loadCommander() {
     return;
   }
   await createDrafts();
+  await fillTankHeights();
+}
+
+// Saved days: fill a blank end height (inches) from the tank monitor when the saved end
+// gallons are that same reading. Nothing typed is changed; the old version stays in history.
+async function fillTankHeights() {
+  if (!allowDraftWrites) return;
+  for (const date of Object.keys(cmdr.days).filter((d) => days[d]).sort()) {
+    const updated = commander.fillInches(days[date], cmdr.days[date], settings);
+    if (!updated) continue;
+    try {
+      await store.saveDay(updated);
+      days[date] = updated;
+    } catch (err) {
+      console.warn(`Tank heights for ${date} not filled:`, err.message);
+    }
+  }
 }
 
 // Import mode B: a closed day from the Commander with no saved report becomes a draft,

@@ -85,6 +85,9 @@ export const localStore = {
     state = { ...blank(), ...structuredClone(data), settings: withDefaults(data.settings) };
     write();
   },
+  // Commander data only exists in the cloud database.
+  commander: false,
+
   async clearAll() {
     state = blank();
     write();

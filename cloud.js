@@ -107,6 +107,50 @@ export const cloudStore = {
     check(await db.from('site_content').upsert({ key, data, updated_at: now() }));
   },
 
+  // ---- Commander data uploaded by the store PC (cmdr_* tables) ----
+  commander: true,
+  async getCommanderDays() {
+    return readAll('cmdr_days', 'business_date, period_name, pulled_at, data, checks_ok, items_count, items_total', 'business_date');
+  },
+  async getCommanderItems() {
+    return readAll('cmdr_items', 'business_date, upc, description, customers, units, price, sales', 'business_date');
+  },
+  async getCommanderDeals() {
+    return readAll('cmdr_deals', 'business_date, promotion_id, name, deal_type, customers, count, items, sales', 'business_date');
+  },
+  async latestSnapshot() {
+    return check(await db.from('cmdr_live_snapshots').select('id, taken_at, request_id, data').order('taken_at', { ascending: false }).limit(1).maybeSingle());
+  },
+  // The snapshot taken closest before `iso` (within `minutes`), e.g. the same time last week.
+  async snapshotBefore(iso, minutes = 45) {
+    const earliest = new Date(new Date(iso).getTime() - minutes * 60000).toISOString();
+    return check(await db.from('cmdr_live_snapshots').select('id, taken_at, data').lte('taken_at', iso).gte('taken_at', earliest).order('taken_at', { ascending: false }).limit(1).maybeSingle());
+  },
+  async snapshotForRequest(requestId) {
+    return check(await db.from('cmdr_live_snapshots').select('id, taken_at, request_id, data').eq('request_id', requestId).limit(1).maybeSingle());
+  },
+  async heartbeat() {
+    return check(await db.from('cmdr_heartbeat').select('last_seen, script_version, last_error, last_day_uploaded').eq('id', 1).maybeSingle());
+  },
+  async requestPull(kind = 'live', businessDate = null) {
+    return check(await db.from('cmdr_requests').insert({ kind, business_date: businessDate }).select('id, status, requested_at').single());
+  },
+  async getRequest(id) {
+    return check(await db.from('cmdr_requests').select('id, kind, status, error, started_at, finished_at').eq('id', id).maybeSingle());
+  },
+  // Live updates; returns a function that stops listening.
+  watch(table, onChange, filter) {
+    const channel = db.channel(`watch-${table}-${Math.random().toString(36).slice(2)}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table, ...(filter ? { filter } : {}) }, (payload) => onChange(payload))
+      .subscribe();
+    return () => db.removeChannel(channel);
+  },
+  // Creates the day only if nobody has saved it yet; never overwrites a saved day.
+  async insertDayIfMissing(day) {
+    const rows = check(await db.from('daily_reports').upsert({ report_date: day.date, data: day, updated_at: now() }, { onConflict: 'report_date', ignoreDuplicates: true }).select('report_date'));
+    return rows.length > 0;
+  },
+
   async exportAll() {
     const collections = {};
     for (const name of COLLECTIONS) {

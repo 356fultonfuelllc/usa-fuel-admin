@@ -1,0 +1,176 @@
+// Commander data uploaded by the store PC (cmdr_* tables): turning a closed day into a
+// draft daily report, and comparing a saved report with what the register recorded.
+
+import * as calc from './calc.js';
+import { fmt } from './ui.js';
+
+// Commander grade keys -> dashboard grade keys.
+const GRADE_KEYS = { reg: 'regular', mid: 'mid', prem: 'premium', dsl: 'diesel' };
+const TANK_ROLES = { reg: 'regular', prem: 'premium', dsl: 'diesel' };
+// Commander sales groups -> the label of the dashboard sales group they fill.
+const CATEGORY_LABELS = {
+  grocery: 'Grocery & snacks', cold: 'Cold drinks', coffee: 'Coffee & hot food', beer: 'Beer',
+  tobacco: 'Cigarettes & tobacco', vape: 'Vape', ice: 'Ice', auto: 'Automotive', other: 'Other', bottle: 'Bottle deposits',
+};
+const CATEGORY_FALLBACK_KEYS = { cold: 'drinks', bottle: 'bottleDeposits' };
+
+export const OWNER_FIELDS = ['invoice gallons, landed cost and ticket # for deliveries', 'cash counted', 'bank deposit', 'pay outs', 'prepared by'];
+
+const str = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? '' : String(Math.round(Number(v) * 1000) / 1000));
+
+function groupKeyFor(category, settings) {
+  const label = CATEGORY_LABELS[category];
+  const byLabel = settings.departments.find((g) => g.label.trim().toLowerCase() === (label || '').toLowerCase());
+  if (byLabel) return byLabel.key;
+  const fallback = settings.departments.find((g) => g.key === (CATEGORY_FALLBACK_KEYS[category] || category));
+  return fallback ? fallback.key : null;
+}
+
+function timeLabel(iso) {
+  return iso && iso.length >= 16 ? iso.slice(11, 16) : '';
+}
+
+// Fills a blank draft (from the day form's own blankDay) with what the Commander recorded.
+// Owner fields stay blank. Returns { draft, flags }.
+export function applyToDraft(draft, cmdr, settings) {
+  const d = cmdr.data || {};
+  const flags = [];
+  const tc = settings.volumeBasis === 'tc';
+
+  for (const [code, grade] of Object.entries(GRADE_KEYS)) {
+    const f = d.fuel?.[code];
+    if (!f) continue;
+    draft.fuel[grade] = { gallons: str(f.gallons), amount: str(f.sales), cashGallons: str(f.cash_gallons) };
+    for (const level of ['cash', 'credit']) {
+      if (f[`${level}_price_status`] === 'confirmed' && f[`${level}_price`]) {
+        draft.prices[level][grade] = String(f[`${level}_price`]);
+      } else if (f[`${level}_gallons`] > 0) {
+        flags.push(`${grade} ${level} price changed during the day (average ${fmt.ppg(f[`${level}_price`])}); kept the price on file. Check it.`);
+      }
+    }
+  }
+  draft.fuel.manual = str(d.categories?.manual_fuel ?? 0);
+
+  for (const [category, label] of Object.entries(CATEGORY_LABELS)) {
+    const amount = d.categories?.[category];
+    if (amount == null) continue;
+    const key = groupKeyFor(category, settings);
+    if (key) draft.departments[key] = str(amount);
+    else if (Number(amount)) flags.push(`${label} ${fmt.money(Number(amount))}: no matching sales group in Settings.`);
+  }
+  for (const dept of d.unmapped_departments || []) flags.push(`Commander department ${dept.number} ${dept.name} (${fmt.money(dept.sales)}) has no group yet; counted as Other.`);
+
+  draft.tax = str(d.sales_tax);
+  draft.customers = str(d.customer_count);
+  draft.counts = { noSales: str(d.no_sale_count), voids: str(d.void_count), refunds: str(d.refunds) };
+  draft.tenders = { ...draft.tenders, cash: str(d.mop?.CASH), credit: str(d.cards?.credit), debit: str(d.cards?.debit), fleet: str(d.cards?.fleet) };
+  draft.register = { ...draft.register, batchTotal: str(d.cards?.batch_total), totalSales: str(d.commander_total), totalPayments: str(d.commander_total) };
+  draft.cash = { ...draft.cash, payIns: str(d.pay_ins), cashBack: str(d.cash_back), safeDrops: str(d.safe_drops) };
+
+  for (const tank of settings.tanks) {
+    const code = Object.keys(TANK_ROLES).find((k) => TANK_ROLES[k] === tank.role);
+    const t = d.tanks?.[code];
+    if (!t) continue;
+    const reading = draft.tanks[tank.key];
+    reading.time = t.reading_time || '';
+    reading[tc ? 'endTc' : 'endGallons'] = str(t.end);
+    if (tc) flags.push(`${tank.product}: the Commander gives gross volume; Settings uses temperature-corrected. Check the end volume.`);
+    reading.pumped = str(t.pumped);
+    if (t.tls?.water != null) reading.water = str(t.tls.water);
+    if (reading.start !== '' && t.start != null && Math.abs(Number(reading.start) - Number(t.start)) > 0.5) {
+      flags.push(`${tank.product}: start ${fmt.number(Number(reading.start))} (from the previous day) but the TLS says ${fmt.number(t.start)}.`);
+    }
+    if (reading.start === '' && t.start != null) reading.start = str(t.start);
+    reading.deliveries = (d.deliveries || []).filter((x) => x.tank === code).map((x) => ({ invoiceGallons: '', measured: str(x.tls_gallons), cost: '', ticket: '' }));
+    for (const x of (d.deliveries || []).filter((y) => y.tank === code)) {
+      flags.push(`${tank.product} delivery of ${fmt.number(x.tls_gallons)} gal at ${timeLabel(x.time)}: add invoice gallons, landed cost and ticket #.`);
+    }
+  }
+
+  if (!draft.notes) {
+    const notes = [];
+    if (Number(d.void_count)) notes.push(`Voids: ${d.void_count} tickets, ${fmt.money(Number(d.void_amount || 0))}.`);
+    for (const x of d.deliveries || []) {
+      const tank = settings.tanks.find((t) => t.role === TANK_ROLES[x.tank]);
+      notes.push(`Delivery (TLS): ${tank ? tank.product : x.tank} +${fmt.number(x.tls_gallons)} gal at ${timeLabel(x.time)}.`);
+    }
+    if (!Number(d.safe_drops)) notes.push('No safe drops recorded.');
+    draft.notes = notes.join('\n');
+  }
+
+  draft.import = {
+    source: 'commander',
+    status: 'needs_review',
+    period: cmdr.period_name || d.period_name || '',
+    pulledAt: cmdr.pulled_at || d.pulled_at || '',
+    createdAt: new Date().toISOString(),
+    flags,
+  };
+  return { draft, flags };
+}
+
+// What differs between a saved day and the Commander's numbers for it.
+export function differences(day, cmdr, settings) {
+  const d = cmdr?.data;
+  if (!day || !d) return [];
+  const out = [];
+  const money = (label, saved, commander) => {
+    if (commander == null) return;
+    const a = Number(saved || 0);
+    if (Math.abs(a - Number(commander)) > 0.005) out.push({ label, saved: fmt.money(a), commander: fmt.money(Number(commander)) });
+  };
+  const count = (label, saved, commander) => {
+    if (commander == null) return;
+    if (Number(saved || 0) !== Number(commander)) out.push({ label, saved: String(Number(saved || 0)), commander: String(commander) });
+  };
+  for (const [code, grade] of Object.entries(GRADE_KEYS)) {
+    const f = d.fuel?.[code];
+    if (!f) continue;
+    const g = calc.GRADES.find((x) => x.key === grade).label;
+    if (Math.abs(Number(day.fuel?.[grade]?.gallons || 0) - Number(f.gallons)) > 0.0005) {
+      out.push({ label: `${g} gallons`, saved: fmt.number(Number(day.fuel?.[grade]?.gallons || 0), 3), commander: fmt.number(Number(f.gallons), 3) });
+    }
+    money(`${g} sales`, day.fuel?.[grade]?.amount, f.sales);
+  }
+  for (const [category, label] of Object.entries(CATEGORY_LABELS)) {
+    const key = groupKeyFor(category, settings);
+    if (key) money(label, day.departments?.[key], d.categories?.[category]);
+  }
+  money('Sales tax', day.tax, d.sales_tax);
+  count('Customers', day.customers, d.customer_count);
+  money('Cash payments', day.tenders?.cash, d.mop?.CASH);
+  money('Credit cards', day.tenders?.credit, d.cards?.credit);
+  money('Debit cards', day.tenders?.debit, d.cards?.debit);
+  money('Fleet cards', day.tenders?.fleet, d.cards?.fleet);
+  money('Commander total sales', day.register?.totalSales, d.commander_total);
+  return out;
+}
+
+// Status of a day in the Daily reports list.
+export function dayStatus(day, cmdr, settings) {
+  if (!cmdr) return null;
+  if (!day) return { tone: 'idle', label: 'Pulled', title: 'In from the Commander; the draft is created when the dashboard opens.' };
+  if (day.import?.status === 'needs_review') return { tone: 'warn', label: 'Needs review', title: 'Imported from the Commander. Check it and add the owner fields, then Save day.' };
+  const diffs = differences(day, cmdr, settings);
+  if (diffs.length) return { tone: 'bad', label: `Differs (${diffs.length})`, title: diffs.map((x) => `${x.label}: saved ${x.saved}, Commander ${x.commander}`).join('\n') };
+  return { tone: 'good', label: day.import ? 'Imported' : 'Matches', title: 'Saved numbers match the Commander.' };
+}
+
+// Item-sales reports built from the Commander's daily item and deal rows, in the shape the
+// Item sales page uses for saved reports.
+export function itemReports(items, deals) {
+  const byDate = {};
+  for (const i of items) {
+    (byDate[i.business_date] ||= { items: [], deals: [] }).items.push({
+      plu: i.upc, name: i.description || 'NO DESCRIPTION', customers: i.customers, qty: i.units, price: Number(i.price), sales: Number(i.sales),
+    });
+  }
+  for (const x of deals) {
+    (byDate[x.business_date] ||= { items: [], deals: [] }).deals.push({
+      type: x.deal_type === 'combo' ? 'combo' : 'mix', number: x.promotion_id, name: x.name, customers: x.customers ?? 0, count: x.count, sales: Number(x.sales),
+    });
+  }
+  return Object.entries(byDate).map(([date, r]) => ({ id: `cmdr-${date}`, day: date, from: date, to: date, items: r.items, deals: r.deals, source: 'commander' }));
+}
+
+export { GRADE_KEYS };

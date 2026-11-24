@@ -790,3 +790,15 @@ img { display: block; max-width: 100%; }
 .fld--inline { display: flex; align-items: center; gap: 8px; }
 .fld--inline .fld__label { margin: 0; }
 .day-tools { max-width: 320px; margin-bottom: 10px; }
+
+/* Commander: Live page, Overview tile, imported-day banners */
+.live-status p { margin: 0 0 6px; }
+.live-status p:last-child { margin-bottom: 0; }
+.live-grid { display: grid; gap: 18px; }
+@media (min-width: 900px) { .live-grid { grid-template-columns: 1fr 1fr; align-items: start; } }
+.live-grid .card { margin-bottom: 0; }
+.live-grid { margin-bottom: 18px; }
+.import-banner p { margin: 8px 0; }
+.import-flags { margin: 6px 0 0; padding-left: 20px; font-size: .9rem; }
+.import-flags li { margin: 3px 0; }
+.table tr.is-pending td { background: var(--bg); }

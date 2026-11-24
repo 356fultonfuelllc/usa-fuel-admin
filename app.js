@@ -18,6 +18,8 @@ import { renderExport } from './pages/export.js';
 import { renderCompliance, complianceAlerts } from './pages/compliance.js';
 import { renderInspections, renderInspection, inspectionAlerts } from './pages/inspections.js';
 import { CHECKLISTS } from './pages/compliance-data.js';
+import { renderLive, liveTile } from './pages/live.js';
+import * as commander from './commander.js';
 
 const view = document.getElementById('view');
 const DEFAULT_TITLE = document.title;
@@ -29,6 +31,11 @@ let reconNotes = {};
 // Records kept in lists (see store.list) plus the website content.
 const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance', 'item_reports'];
 let extra = { ...Object.fromEntries(COLLECTIONS.map((c) => [c, []])), content: {} };
+// Commander data from the store PC: closed days by date, and the daily item/deal rows.
+let cmdr = { days: {}, items: [], deals: [], draftsPending: [] };
+const isLocalhost = ['localhost', '127.0.0.1'].includes(location.hostname);
+// On a developer's copy, drafts are only listed, never written, unless ?drafts=on.
+const allowDraftWrites = !isLocalhost || new URLSearchParams(location.search).get('drafts') === 'on';
 let unsaved = false;
 let currentHash = location.hash || '#/';
 
@@ -66,6 +73,7 @@ function periodStatus(result) {
 
 const routes = [
   [/^#\/?$/, renderHome, 'home'],
+  [/^#\/live$/, () => renderLive(ctx), 'live'],
   [/^#\/day(?:\/(\d{4}-\d{2}-\d{2}))?$/, renderEntry, 'day'],
   [/^#\/days$/, renderDays, 'days'],
   [/^#\/report\/(\d{4}-\d{2}-\d{2})$/, renderReport, 'days'],
@@ -97,6 +105,7 @@ const ctx = {
   get settings() { return settings; },
   get days() { return days; },
   get data() { return extra; },
+  get cmdr() { return cmdr; },
   banner: () => sampleBanner(),
   rerender: () => route(),
   markUnsaved(on = true) { unsaved = on; },
@@ -290,6 +299,8 @@ function windowTotals(from, to) {
 
 function attentionItems(today) {
   const items = [];
+  const toReview = sortedDates().filter((d) => days[d].import?.status === 'needs_review');
+  if (toReview.length) items.push(['warn', `${toReview.length} day${toReview.length === 1 ? '' : 's'} imported from the Commander need${toReview.length === 1 ? 's' : ''} review (${toReview.slice(0, 3).map(shortDate).join(', ')}${toReview.length > 3 ? '…' : ''}).`, '#/days', 'Daily reports']);
   const dates = sortedDates();
   const earliest = dates[0] || today;
 
@@ -394,6 +405,8 @@ function renderHome() {
       </div>
     </header>
 
+    ${store.commander ? '<section class="card live-tile" data-live-tile hidden></section>' : ''}
+
     <section class="card">
       <h2 class="card__title">Last 7 days</h2>
       ${tiles}
@@ -435,6 +448,7 @@ function renderHome() {
           ${items.length > 8 ? `<p class="muted">And ${items.length - 8} more.</p>` : ''}` : `<p>${pill('good', 'All clear')}</p>`}
       </section>
     </div>`;
+  liveTile(ctx, view.querySelector('[data-live-tile]'));
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +585,15 @@ function cashierRows(cashiers) {
 function renderEntry(dateParam) {
   const date = dateParam || calc.todayInNewYork();
   const exists = Boolean(days[date]);
-  const draft = upgradeDraft(exists ? structuredClone(days[date]) : blankDay(date), date);
+  const fromCommander = !exists && cmdr.days[date] ? commander.applyToDraft(blankDay(date), cmdr.days[date], settings).draft : null;
+  const draft = upgradeDraft(exists ? structuredClone(days[date]) : fromCommander || blankDay(date), date);
+  const importBanner = draft.import?.status === 'needs_review'
+    ? `<section class="card import-banner">${pill('warn', 'Imported from the Commander')}<p>Pulled from the register${draft.import.period ? ` (period ${esc(draft.import.period)})` : ''}. Check it, add ${esc(commander.OWNER_FIELDS.join(', '))}, then <strong>Save day</strong>.</p>${draft.import.flags?.length ? `<ul class="import-flags">${draft.import.flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}</section>`
+    : '';
+  const diffs = exists && cmdr.days[date] && !draft.import ? commander.differences(days[date], cmdr.days[date], settings) : [];
+  const diffBanner = diffs.length
+    ? `<section class="card import-banner">${pill('bad', `Commander data differs (${diffs.length})`)}<div class="table-wrap"><table class="table"><thead><tr><th></th><th class="num">Saved</th><th class="num">Commander</th></tr></thead><tbody>${diffs.map((x) => `<tr><td>${esc(x.label)}</td><td class="num">${esc(x.saved)}</td><td class="num">${esc(x.commander)}</td></tr>`).join('')}</tbody></table></div><p class="muted">Your saved numbers are never changed automatically.</p></section>`
+    : '';
   const value = (path) => getPath(draft, path);
   const tc = settings.volumeBasis === 'tc';
   const endKey = tc ? 'endTc' : 'endGallons';
@@ -609,6 +631,7 @@ function renderEntry(dateParam) {
       </div>
     </header>
 
+    ${importBanner}${diffBanner}
     <div class="entry">
       <form class="entry__form" data-entry-form novalidate>
         <p class="muted entry__tip">Tab or Enter moves to the next box. Enter on the last box saves the day.</p>
@@ -930,6 +953,7 @@ function renderEntry(dateParam) {
     for (const tank of settings.tanks) {
       draft.tanks[tank.key].deliveries = draft.tanks[tank.key].deliveries.filter((d) => Object.values(d).some((v) => String(v ?? '').trim() !== ''));
     }
+    if (draft.import?.status === 'needs_review') draft.import = { ...draft.import, status: 'reviewed', reviewedAt: new Date().toISOString() };
     const button = form.querySelector('[type="submit"]');
     button.disabled = true;
     const saved = await attempt(() => store.saveDay(draft), "Couldn't save this day. Your numbers are still on the screen, so try Save again.");
@@ -940,7 +964,7 @@ function renderEntry(dateParam) {
     status.textContent = 'Saved';
     status.classList.remove('is-unsaved');
     toast(`Saved ${mediumDate(date)}`);
-    if (!exists) renderEntry(date);
+    if (!exists || importBanner) renderEntry(date);
   });
 
   view.querySelector('[data-delete-day]')?.addEventListener('click', async () => {
@@ -964,7 +988,8 @@ function renderEntry(dateParam) {
 // ---------------------------------------------------------------------------
 
 function renderDays() {
-  const dates = sortedDates().reverse();
+  const withCommander = store.commander && Object.keys(cmdr.days).length > 0;
+  const dates = [...new Set([...sortedDates(), ...(withCommander ? Object.keys(cmdr.days).filter((d) => d >= settings.reconStart) : [])])].sort().reverse();
   view.innerHTML = `
     ${sampleBanner()}
     <header class="page-head">
@@ -973,8 +998,21 @@ function renderDays() {
     </header>
     <section class="card">
       ${dates.length ? `<div class="table-wrap"><table class="table">
-        <thead><tr><th>Date</th><th class="num">Fuel gallons</th><th class="num">Total sales</th><th>Payments</th><th>Cash</th><th class="num">Tanks (gal)</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th class="num">Fuel gallons</th><th class="num">Total sales</th><th>Payments</th><th>Cash</th><th class="num">Tanks (gal)</th>${withCommander ? '<th>Commander</th>' : ''}<th></th></tr></thead>
         <tbody>${dates.map((d) => {
+          const status = withCommander ? commander.dayStatus(days[d], cmdr.days[d], settings) : null;
+          const statusCell = withCommander ? `<td>${status ? `<span title="${esc(status.title)}">${pill(status.tone, status.label)}</span>` : '<span class="muted">—</span>'}</td>` : '';
+          if (!days[d]) {
+            const c = cmdr.days[d].data || {};
+            return `<tr class="is-pending">
+              <td>${mediumDate(d)}</td>
+              <td class="num">${fmt.number(c.fuel_total?.gallons ?? null)}</td>
+              <td class="num">${fmt.money(c.commander_total ?? null)}</td>
+              <td colspan="3" class="muted">${cmdr.draftsPending.includes(d) ? 'Draft not created on this test copy' : 'Draft being created'}</td>
+              ${statusCell}
+              <td class="actions"><a class="link" href="#/day/${d}">Open</a></td>
+            </tr>`;
+          }
           const s = calc.summarizeDay(days[d], settings);
           const tankText = settings.tanks.map((t) => {
             const line = calc.tankLine(d, t, days, settings);
@@ -987,6 +1025,7 @@ function renderDays() {
             <td>${paymentsStatus(s)}</td>
             <td>${cashStatus(s)}</td>
             <td class="num">${tankText}</td>
+            ${statusCell}
             <td class="actions"><a class="link" href="#/day/${d}">Edit</a></td>
           </tr>`;
         }).join('')}</tbody>
@@ -1633,6 +1672,44 @@ async function reload() {
   reconNotes = await store.getReconNotes();
   const lists = await Promise.all(COLLECTIONS.map((c) => store.list(c)));
   extra = { ...Object.fromEntries(COLLECTIONS.map((c, i) => [c, lists[i]])), content: await store.getContent() };
+  await loadCommander();
+}
+
+// Commander data never stops the dashboard from loading: if it can't be read, it's skipped.
+async function loadCommander() {
+  cmdr = { days: {}, items: [], deals: [], draftsPending: [] };
+  if (!store.commander) return;
+  try {
+    const [rows, items, deals] = await Promise.all([store.getCommanderDays(), store.getCommanderItems(), store.getCommanderDeals()]);
+    cmdr.days = Object.fromEntries(rows.map((r) => [r.business_date, r]));
+    cmdr.items = items;
+    cmdr.deals = deals;
+  } catch (err) {
+    console.warn('Commander data not loaded:', err.message);
+    return;
+  }
+  await createDrafts();
+}
+
+// Import mode B: a closed day from the Commander with no saved report becomes a draft,
+// marked "needs review". Saved days are never touched.
+async function createDrafts() {
+  const missing = Object.keys(cmdr.days).filter((d) => d >= settings.reconStart && !days[d]).sort();
+  if (!missing.length) return;
+  if (!allowDraftWrites) {
+    cmdr.draftsPending = missing;
+    return;
+  }
+  for (const date of missing) {
+    const { draft } = commander.applyToDraft(upgradeDraft(blankDay(date), date), cmdr.days[date], settings);
+    draft.date = date;
+    try {
+      if (await store.insertDayIfMissing(draft)) days[date] = draft;
+      else days = await store.getDays(); // someone saved it in the meantime
+    } catch (err) {
+      console.warn(`Draft for ${date} not created:`, err.message);
+    }
+  }
 }
 
 start();

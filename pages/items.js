@@ -3,6 +3,7 @@
 
 import * as calc from '../calc.js';
 import { parseReport } from '../itemreport.js';
+import { itemReports } from '../commander.js';
 import { fmt, esc, pill, toast, field, selectField, newId, mediumDate, shortDate, statTile } from '../ui.js';
 
 const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs';
@@ -10,6 +11,18 @@ const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.
 
 let view = null; // { from, to, rank } kept while moving around the dashboard
 let pending = null; // a parsed report waiting to be saved
+
+// Saved reports plus one report per day from the Commander. For a date the Commander has,
+// its data wins and saved reports covering that date are set aside, so nothing counts twice.
+function allReports(ctx) {
+  const fromCommander = itemReports(ctx.cmdr?.items || [], ctx.cmdr?.deals || []);
+  const covered = new Set(fromCommander.map((r) => r.from));
+  const saved = ctx.data.item_reports.filter((r) => {
+    for (let d = r.from; d <= r.to; d = calc.addDays(d, 1)) if (covered.has(d)) return false;
+    return true;
+  });
+  return [...saved, ...fromCommander];
+}
 
 const daysBetween = (from, to) => Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000) + 1;
 const overlaps = (a, b) => a.from <= b.to && b.from <= a.to;
@@ -177,7 +190,7 @@ function previewHtml(p, reports) {
 
 export function renderItems(ctx) {
   const today = calc.todayInNewYork();
-  const reports = ctx.data.item_reports.slice().sort((a, b) => b.to.localeCompare(a.to) || b.from.localeCompare(a.from));
+  const reports = allReports(ctx).sort((a, b) => b.to.localeCompare(a.to) || b.from.localeCompare(a.from));
   const latest = reports[0];
   const thisMonth = calc.monthBounds(today.slice(0, 7));
   const range = view || { from: latest ? calc.monthBounds(latest.to.slice(0, 7)).start : thisMonth.start, to: latest ? calc.monthBounds(latest.to.slice(0, 7)).end : thisMonth.end, rank: 'sales' };
@@ -293,8 +306,8 @@ export function renderItems(ctx) {
         <tbody>${reports.map((r) => `<tr>
           <td>${periodText(r)}</td><td class="num">${fmt.number((r.items || []).length)}</td>
           <td class="num">${fmt.money((r.items || []).reduce((a, i) => a + i.sales, 0))}</td><td class="num">${fmt.number((r.deals || []).length)}</td>
-          <td class="muted">${r.addedAt ? mediumDate(r.addedAt.slice(0, 10)) : ''}</td>
-          <td class="actions no-print"><button class="btn btn--ghost btn--small" type="button" data-delete-report="${esc(r.id)}">Delete</button></td>
+          <td class="muted">${r.source === 'commander' ? 'From the Commander' : r.addedAt ? mediumDate(r.addedAt.slice(0, 10)) : ''}</td>
+          <td class="actions no-print">${r.source === 'commander' ? '' : `<button class="btn btn--ghost btn--small" type="button" data-delete-report="${esc(r.id)}">Delete</button>`}</td>
         </tr>`).join('')}</tbody>
       </table></div>` : '<p class="empty">No reports added yet.</p>'}
     </section>`;
@@ -420,7 +433,7 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 
 export function renderItemHistory(ctx, kind, key) {
   const isItem = kind === 'item';
-  const reports = ctx.data.item_reports.slice().sort((a, b) => b.to.localeCompare(a.to) || b.from.localeCompare(a.from));
+  const reports = allReports(ctx).sort((a, b) => b.to.localeCompare(a.to) || b.from.localeCompare(a.from));
   const listOf = (r) => (isItem ? r.items : r.deals) || [];
   const keyOf = isItem ? itemKey : dealKey;
   const countField = isItem ? 'qty' : 'count';

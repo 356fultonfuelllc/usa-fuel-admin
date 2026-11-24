@@ -32,7 +32,7 @@ let reconNotes = {};
 const COLLECTIONS = ['price_changes', 'deposits', 'house_accounts', 'house_charges', 'house_payments', 'expenses', 'compliance_items', 'inspections', 'maintenance', 'item_reports'];
 let extra = { ...Object.fromEntries(COLLECTIONS.map((c) => [c, []])), content: {} };
 // Commander data from the store PC: closed days by date, and the daily item/deal rows.
-let cmdr = { days: {}, items: [], deals: [], draftsPending: [] };
+let cmdr = { days: {}, items: [], deals: [], draftsPending: [], latest: null };
 const isLocalhost = ['localhost', '127.0.0.1'].includes(location.hostname);
 // On a developer's copy, drafts are only listed, never written, unless ?drafts=on.
 const allowDraftWrites = !isLocalhost || new URLSearchParams(location.search).get('drafts') === 'on';
@@ -304,12 +304,33 @@ function attentionItems(today) {
   const dates = sortedDates();
   const earliest = dates[0] || today;
 
-  // Fuel to order.
+  // Fuel to order: from the tank monitor's live reading when there's a recent one.
+  const live = commander.liveTanks(cmdr.latest, settings);
   for (const tank of settings.tanks) {
-    const o = calc.tankOutlook(tank, days, settings, today);
+    const o = calc.tankOutlook(tank, days, settings, today, live[tank.key]);
     if (o.state === 'order') items.push(['bad', `Order ${tank.product.toLowerCase()}: about ${fmt.number(o.estimate)} gal left${o.daysOfSupply != null ? ` (${fmt.number(o.daysOfSupply, 1)} days)` : ''}. Room for ${fmt.number(o.room)} gal.`, '#/fuel', 'Fuel ordering']);
     else if (o.state === 'soon') items.push(['warn', `Order ${tank.product.toLowerCase()} by ${mediumDate(o.reorderDate)}: about ${fmt.number(o.daysOfSupply, 1)} days left.`, '#/fuel', 'Fuel ordering']);
   }
+  // Deliveries in the last 30 days: short loads and loads still missing the invoice.
+  const recentDeliveries = commander.deliveries(days, settings, calc.addDays(today, -30), today).rows;
+  for (const d of recentDeliveries.filter((x) => x.state === 'short')) {
+    items.push(['bad', `${d.tank.product} delivery on ${mediumDate(d.date)}${d.ticket ? ` (#${d.ticket})` : ''} came in ${fmt.number(Math.round(d.shortGallons))} gal short of the invoice${d.shortValue != null ? ` (about ${usd.format(d.shortValue)})` : ''}.`, '#/fuel', 'Deliveries']);
+  }
+  const noInvoice = recentDeliveries.filter((x) => x.state === 'no-invoice');
+  if (noInvoice.length) items.push(['warn', `${noInvoice.length} deliver${noInvoice.length === 1 ? 'y needs' : 'ies need'} invoice gallons and cost (${noInvoice.slice(0, 3).map((x) => `${x.tank.product.split(' ')[0].toLowerCase()} ${shortDate(x.date)}`).join(', ')}${noInvoice.length > 3 ? '…' : ''}).`, '#/fuel', 'Deliveries']);
+
+  // Tank monitor: water in a tank now, and alarms in the last 30 days.
+  for (const tank of settings.tanks) {
+    const reading = live[tank.key];
+    if (reading?.water != null && reading.water >= Number(settings.thresholds.waterIncrease)) {
+      items.push(['bad', `Water in the ${tank.product.toLowerCase()} tank: ${fmt.number(Number(reading.water), 2)} in (tank monitor, now).`, '#/fuel', 'Tank monitor']);
+    }
+  }
+  for (const alarm of commander.tankAlarms(cmdr).filter((a) => a.date && a.date.slice(0, 10) >= calc.addDays(today, -30))) {
+    const tank = settings.tanks.find((t) => t.role === commander.TANK_ROLES[alarm.tank]);
+    items.push(['bad', `Tank monitor alarm: ${alarm.type || 'alarm'}${tank ? ` on ${tank.product.toLowerCase()}` : ''} (${mediumDate(alarm.date.slice(0, 10))}).`, '#/fuel', 'Tank monitor']);
+  }
+
   // Compliance items due within 30 days, and staff checklists that are overdue.
   for (const { item, status } of complianceAlerts(extra.compliance_items, today)) {
     items.push([status.state === 'overdue' ? 'bad' : 'warn', status.state === 'overdue' ? `${item.name} was due ${mediumDate(status.due)}.` : `${item.name} is due ${mediumDate(status.due)}.`, '#/compliance', 'Compliance']);
@@ -1700,13 +1721,14 @@ async function reload() {
 
 // Commander data never stops the dashboard from loading: if it can't be read, it's skipped.
 async function loadCommander() {
-  cmdr = { days: {}, items: [], deals: [], draftsPending: [] };
+  cmdr = { days: {}, items: [], deals: [], draftsPending: [], latest: null };
   if (!store.commander) return;
   try {
-    const [rows, items, deals] = await Promise.all([store.getCommanderDays(), store.getCommanderItems(), store.getCommanderDeals()]);
+    const [rows, items, deals, latest] = await Promise.all([store.getCommanderDays(), store.getCommanderItems(), store.getCommanderDeals(), store.latestSnapshot()]);
     cmdr.days = Object.fromEntries(rows.map((r) => [r.business_date, r]));
     cmdr.items = items;
     cmdr.deals = deals;
+    cmdr.latest = latest;
   } catch (err) {
     console.warn('Commander data not loaded:', err.message);
     return;

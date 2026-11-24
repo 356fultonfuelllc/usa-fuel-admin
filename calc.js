@@ -648,7 +648,9 @@ export function holidayOn(content, date) {
 // ---- Fuel ordering ----
 
 // Where each tank stands at the last reading, how fast it's selling, and how much fits.
-export function tankOutlook(tank, days, settings, today) {
+// `live` = { volume, at } from the tank monitor (a recent Commander snapshot): when given,
+// the tank's level is that reading instead of last close less an estimate.
+export function tankOutlook(tank, days, settings, today, live = null) {
   const dates = Object.keys(days).filter((d) => d <= today).sort();
   const latest = dates.slice().reverse().find((d) => endVolume(days[d].tanks?.[tank.key], settings) != null) || null;
   const recent = dates.slice(-7).map((d) => tankLine(d, tank, days, settings).pumped).filter((v) => v != null && v > 0);
@@ -661,12 +663,13 @@ export function tankOutlook(tank, days, settings, today) {
     ? num(tank.reorderAt)
     : Math.round(Math.max(capacity * 0.1, (perDay || 0) * (leadDays + 2)) / 100) * 100;
   const maxFill = Math.round(capacity * num(settings.ordering?.maxFillPct || 90) / 100);
-  if (!latest) return { tank, latest: null, perDay, capacity, reorderAt, maxFill, state: 'unknown' };
+  const hasLive = live && live.volume != null && Number.isFinite(Number(live.volume));
+  if (!latest && !hasLive) return { tank, latest: null, perDay, capacity, reorderAt, maxFill, state: 'unknown' };
 
-  const level = endVolume(days[latest].tanks[tank.key], settings);
-  // Readings are taken at close; take off what has sold since then (whole days only).
-  const elapsed = Math.max(0, daysBetween(latest, today) - 1);
-  const estimate = perDay == null ? level : Math.max(0, Math.round(level - perDay * elapsed));
+  const level = hasLive ? Number(live.volume) : endVolume(days[latest].tanks[tank.key], settings);
+  // A close reading is from last night: take off what has sold since (whole days only).
+  const elapsed = hasLive ? 0 : Math.max(0, daysBetween(latest, today) - 1);
+  const estimate = hasLive ? Math.round(level) : perDay == null ? level : Math.max(0, Math.round(level - perDay * elapsed));
   const daysOfSupply = perDay ? estimate / perDay : null;
   const daysToReorder = perDay ? (estimate - reorderAt) / perDay : null;
   const room = Math.max(0, Math.floor((maxFill - estimate) / 100) * 100);
@@ -674,7 +677,8 @@ export function tankOutlook(tank, days, settings, today) {
   if (estimate <= reorderAt || (daysToReorder != null && daysToReorder <= leadDays)) state = 'order';
   else if (daysToReorder != null && daysToReorder <= leadDays + 2) state = 'soon';
   return {
-    tank, latest, level, estimate, elapsed, perDay, samples: recent.length, capacity, reorderAt, maxFill, leadDays,
+    tank, latest: latest || today, level, estimate, elapsed, perDay, samples: recent.length, capacity, reorderAt, maxFill, leadDays,
+    source: hasLive ? 'live' : 'close', liveAt: hasLive ? live.at : null,
     daysOfSupply, daysToReorder, room, fullPct: capacity ? estimate / capacity : null, state,
     reorderDate: daysToReorder == null ? null : addDays(today, Math.max(0, Math.floor(daysToReorder))),
   };

@@ -266,4 +266,60 @@ export function itemReports(items, deals) {
   return Object.entries(byDate).map(([date, r]) => ({ id: `cmdr-${date}`, day: date, from: date, to: date, items: r.items, deals: r.deals, source: 'commander' }));
 }
 
-export { GRADE_KEYS };
+// Tank monitor readings from the latest live snapshot, by dashboard tank key. Only used when
+// the snapshot is recent (default 3 hours), so a store PC that's been offline can't mislead.
+export function liveTanks(snapshot, settings, maxAgeHours = 3) {
+  if (!snapshot?.data?.tanks || Date.now() - new Date(snapshot.taken_at).getTime() > maxAgeHours * 3600000) return {};
+  const out = {};
+  for (const tank of settings.tanks) {
+    const code = Object.keys(TANK_ROLES).find((k) => TANK_ROLES[k] === tank.role);
+    const t = snapshot.data.tanks[code];
+    if (!t) continue;
+    out[tank.key] = {
+      volume: t.tls?.volume ?? t.end ?? null,
+      height: t.tls?.height ?? null,
+      water: t.tls?.water ?? null,
+      temperature: t.tls?.temperature ?? null,
+      at: snapshot.taken_at,
+    };
+  }
+  return out;
+}
+
+// Every delivery in a date range: invoice gallons against what the tank monitor measured.
+// Short = the tank went up by more than the tolerance less than the invoice says.
+export function deliveries(days, settings, from, to) {
+  const tolerance = Number(settings.thresholds?.tankDailyGallons ?? 25);
+  const rows = [];
+  for (const date of Object.keys(days).filter((d) => d >= from && d <= to).sort()) {
+    for (const tank of settings.tanks) {
+      const lines = calc.deliveriesOf(days[date].tanks?.[tank.key]);
+      lines.forEach((d, i) => {
+        const invoice = d.invoiceGallons === '' || d.invoiceGallons == null ? null : Number(d.invoiceGallons);
+        const measured = d.measured === '' || d.measured == null ? null : Number(d.measured);
+        const cost = d.cost === '' || d.cost == null ? null : Number(d.cost);
+        const diff = invoice != null && measured != null ? measured - invoice : null;
+        let state = 'ok';
+        if (invoice == null && measured != null) state = 'no-invoice';
+        else if (measured == null) state = 'no-tls';
+        else if (invoice - measured > tolerance) state = 'short';
+        const shortGallons = state === 'short' ? invoice - measured : 0;
+        rows.push({
+          date, tank, index: i, ticket: d.ticket || '', invoice, measured, diff, cost, state,
+          shortGallons, shortValue: shortGallons && cost != null ? shortGallons * cost : null,
+        });
+      });
+    }
+  }
+  return { rows, tolerance };
+}
+
+// Tank monitor alarms from the newest Commander data, newest first.
+export function tankAlarms(cmdr) {
+  const source = cmdr.latest?.data?.tank_alarms
+    || Object.values(cmdr.days || {}).sort((a, b) => b.business_date.localeCompare(a.business_date))[0]?.data?.tank_alarms
+    || [];
+  return source.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+export { GRADE_KEYS, TANK_ROLES };

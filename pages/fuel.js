@@ -2,6 +2,7 @@
 // fuel profit by day and grade for a month.
 
 import * as calc from '../calc.js';
+import * as commander from '../commander.js';
 import { fmt, esc, pill, toast, field, newId, dateTimeLabel, mediumDate, monthLabel, statTile } from '../ui.js';
 
 const GRADES = calc.GRADES;
@@ -67,7 +68,20 @@ export function renderFuel(ctx, monthParam) {
   });
   const anySplit = levels.some((l) => l.days);
   const feeSet = settings.cards?.feePct !== '' && settings.cards?.feePct != null;
-  const outlook = settings.tanks.map((tank) => calc.tankOutlook(tank, days, settings, today));
+  const live = commander.liveTanks(ctx.cmdr?.latest, settings);
+  const outlook = settings.tanks.map((tank) => calc.tankOutlook(tank, days, settings, today, live[tank.key]));
+  const { start: monthStart, end: monthEnd } = calc.monthBounds(month);
+  const ledger = commander.deliveries(days, settings, monthStart, monthEnd);
+  const shortRows = ledger.rows.filter((r) => r.state === 'short');
+  const alarms = commander.tankAlarms(ctx.cmdr || {});
+  const liveAt = Object.values(live)[0]?.at;
+  const clock = (iso) => new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+  const deliveryPill = (r) => ({
+    short: pill('bad', `Short ${fmt.number(Math.round(r.shortGallons))} gal`),
+    'no-invoice': pill('warn', 'Needs invoice'),
+    'no-tls': pill('idle', 'No TLS reading'),
+    ok: pill('good', 'OK'),
+  }[r.state]);
   const orderPill = (o) => ({ order: pill('bad', 'Order now'), soon: pill('warn', 'Order soon'), ok: pill('good', 'OK'), unknown: pill('idle', 'No reading') }[o.state]);
   const monthGallons = rows.reduce((a, r) => a + r.gallons, 0);
   const missingCosts = GRADES.some((g) => costs[g.key] == null);
@@ -142,7 +156,7 @@ export function renderFuel(ctx, monthParam) {
         <thead><tr><th>Tank</th><th class="num">In the tank</th><th class="num">Sells / day</th><th class="num">Days of supply</th><th class="num">Reorder at</th><th>Order by</th><th class="num">Room for a delivery</th><th></th></tr></thead>
         <tbody>${outlook.map((o) => `<tr>
           <td>${esc(o.tank.product)}</td>
-          <td class="num">${o.latest ? `${fmt.number(o.estimate)} gal<br><span class="muted">${o.elapsed ? `estimated · ` : ''}${fmt.number(Math.round(o.fullPct * 100))}% full</span>` : '—'}</td>
+          <td class="num">${o.latest ? `${fmt.number(o.estimate)} gal<br><span class="muted">${o.source === 'live' ? `live ${clock(o.liveAt)} · ` : o.elapsed ? 'estimated · ' : ''}${fmt.number(Math.round(o.fullPct * 100))}% full</span>` : '—'}</td>
           <td class="num">${o.perDay == null ? '—' : `${fmt.number(Math.round(o.perDay))} gal`}</td>
           <td class="num">${o.daysOfSupply == null ? '—' : fmt.number(o.daysOfSupply, 1)}</td>
           <td class="num">${fmt.number(o.reorderAt)} gal</td>
@@ -151,7 +165,51 @@ export function renderFuel(ctx, monthParam) {
           <td>${orderPill(o)}</td>
         </tr>`).join('')}</tbody>
       </table></div>
-      <p class="muted">From each tank's last TLS reading${outlook[0]?.latest ? ` (${mediumDate(outlook[0].latest)} close)` : ''}, less what has sold since. Sales per day average the last 7 days entered. "Room" is what fits up to the fill limit, rounded down to 100 gallons.</p>
+      <p class="muted">${liveAt ? `Gallons are the tank monitor's live reading from ${clock(liveAt)} (the store PC reads it every 15 minutes).` : `From each tank's last TLS reading${outlook[0]?.latest ? ` (${mediumDate(outlook[0].latest)} close)` : ''}, less what has sold since; live readings are used when the store PC has sent one in the last 3 hours.`} Sales per day average the last 7 days entered. "Room" is what fits up to the fill limit, rounded down to 100 gallons.</p>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2 class="card__title">Deliveries · ${monthLabel(month)}</h2>
+        <span class="muted">${shortRows.length ? `${shortRows.length} short · ${fmt.number(Math.round(shortRows.reduce((a, r) => a + r.shortGallons, 0)))} gal${shortRows.some((r) => r.shortValue != null) ? ` · about ${fmt.money(shortRows.reduce((a, r) => a + (r.shortValue || 0), 0))}` : ''}` : `${ledger.rows.length} deliver${ledger.rows.length === 1 ? 'y' : 'ies'}`}</span>
+      </div>
+      ${ledger.rows.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>Date</th><th>Tank</th><th>Ticket</th><th class="num">Invoice</th><th class="num">TLS measured</th><th class="num">Difference</th><th class="num">Cost / gal</th><th></th></tr></thead>
+        <tbody>${ledger.rows.slice().reverse().map((r) => `<tr>
+          <td><a class="link" href="#/day/${r.date}">${mediumDate(r.date)}</a></td>
+          <td>${esc(r.tank.product)}</td>
+          <td>${esc(r.ticket) || '<span class="muted">—</span>'}</td>
+          <td class="num">${r.invoice == null ? '—' : `${fmt.number(r.invoice)} gal`}</td>
+          <td class="num">${r.measured == null ? '—' : `${fmt.number(r.measured)} gal`}</td>
+          <td class="num${r.state === 'short' ? ' is-bad-text' : ''}">${r.diff == null ? '—' : `${fmt.signed(Math.round(r.diff))} gal`}</td>
+          <td class="num">${r.cost == null ? '—' : fmt.ppg(r.cost)}</td>
+          <td>${deliveryPill(r)}${r.shortValue != null ? ` <span class="muted">≈ ${fmt.money(r.shortValue)}</span>` : ''}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted">"Short" means the tank went up by more than ${fmt.number(ledger.tolerance)} gallons less than the invoice (the tank tolerance in Settings), worth raising with your supplier. The tank monitor measures gross gallons; invoices are usually temperature-corrected, so a few gallons either way is normal in cold weather.</p>` : `<p class="empty">No deliveries entered in ${monthLabel(month)}.</p>`}
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2 class="card__title">Tank monitor</h2>
+        <span class="muted">${liveAt ? `Live reading ${clock(liveAt)}` : 'No recent live reading'}</span>
+      </div>
+      ${Object.keys(live).length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>Tank</th><th class="num">Gallons</th><th class="num">Height</th><th class="num">Water</th><th class="num">Temperature</th></tr></thead>
+        <tbody>${settings.tanks.map((tank) => {
+          const r = live[tank.key];
+          if (!r) return '';
+          const wet = r.water != null && r.water >= Number(settings.thresholds.waterIncrease);
+          return `<tr><td>${esc(tank.product)}</td><td class="num">${fmt.number(r.volume)}</td><td class="num">${r.height == null ? '—' : `${fmt.number(Number(r.height), 2)}″`}</td><td class="num${wet ? ' is-bad-text' : ''}">${r.water == null ? '—' : `${fmt.number(Number(r.water), 2)}″`}</td><td class="num">${r.temperature == null ? '—' : `${fmt.number(Number(r.temperature), 1)}°F`}</td></tr>`;
+        }).join('')}</tbody>
+      </table></div>` : '<p class="muted">Readings appear here when the store PC has sent a live snapshot in the last 3 hours.</p>'}
+      <h3 class="card__sub">Alarm history</h3>
+      ${alarms.length ? `<ul class="alerts">${alarms.slice(0, 10).map((a) => {
+        const tank = settings.tanks.find((t) => t.role === commander.TANK_ROLES[a.tank]);
+        const recent = a.date && a.date.slice(0, 10) >= calc.addDays(today, -30);
+        return `<li>${pill(recent ? 'bad' : 'idle', recent ? 'Recent' : 'Past')}<span>${esc(a.type || 'Alarm')}${tank ? ` · ${esc(tank.product)}` : ''} · ${a.date ? `${mediumDate(a.date.slice(0, 10))} ${a.date.slice(11, 16)}` : 'no date'}</span></li>`;
+      }).join('')}</ul>` : '<p class="muted">No alarms recorded by the tank monitor.</p>'}
+      <p class="muted">Water is flagged at ${fmt.number(Number(settings.thresholds.waterIncrease), 2)}″ or more (Settings). Alarm times are the tank monitor's own clock.</p>
     </section>
 
     <section class="card">

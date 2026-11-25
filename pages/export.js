@@ -149,10 +149,10 @@ function deposits(ctx, from, to) {
   const today = calc.todayInNewYork();
   const rows = [['Sales date', 'Deposit amount', 'Deposited on', 'Slip #', 'Cleared on', 'Amount bank shows', 'Difference', 'Status', 'Note']];
   for (const date of datesIn(days, from, to)) {
-    const s = calc.depositState(date, days[date], records[date], settings, today);
+    const s = calc.depositState(date, days[date], records[date], settings, today, calc.depositGroup(records[date], records, days));
     if (s.state === 'none') continue;
-    const r = records[date] || {};
-    rows.push([date, s.amount, r.depositedOn || '', r.slip || '', r.clearedOn || '', s.clearedAmount ?? null, s.difference ?? null, s.state, r.note || '']);
+    const r = { ...(records[date] || {}), ...(s.group ? { depositedOn: s.group.depositedOn, slip: s.group.slip, clearedOn: s.group.clearedOn } : {}) };
+    rows.push([date, s.amount, r.depositedOn || '', r.slip || '', r.clearedOn || '', s.clearedAmount ?? null, s.difference ?? null, s.group ? `${s.state} (combined with ${s.group.days.length - 1} other day${s.group.days.length === 2 ? '' : 's'})` : s.state, r.note || '']);
   }
   return rows;
 }

@@ -364,7 +364,7 @@ function attentionItems(today) {
   // Deposits and house-account charges from the last 45 days.
   const depositRecords = Object.fromEntries(extra.deposits.map((r) => [r.id, r]));
   for (const d of dates.slice().reverse().filter((x) => x >= calc.addDays(today, -45))) {
-    const dep = calc.depositState(d, days[d], depositRecords[d], settings, today);
+    const dep = calc.depositState(d, days[d], depositRecords[d], settings, today, calc.depositGroup(depositRecords[d], depositRecords, days));
     const link = `#/deposits/${d.slice(0, 7)}`;
     if (dep.state === 'overdue') items.push(['warn', `The ${usd.format(dep.amount)} from ${mediumDate(d)} hasn't been deposited.`, link, 'Deposits']);
     if (dep.state === 'late') items.push(['warn', `The ${mediumDate(d)} deposit of ${usd.format(dep.amount)} hasn't cleared the bank.`, link, 'Deposits']);

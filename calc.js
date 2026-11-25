@@ -527,18 +527,30 @@ export function defaultPrices(date, days, priceChanges) {
 
 // ---- Bank deposits ----
 
-export function depositState(date, day, record, settings, today) {
+// Days deposited together share a group record ({ id: 'group-…', days: [...], depositedOn, slip,
+// clearedOn, clearedAmount }); `records` (all deposit records by id) and `days` let a day
+// read its group. The bank's amount is compared with the group's total, once.
+export function depositGroup(record, records, days) {
+  const group = record?.group ? records?.[record.group] : null;
+  if (!group) return null;
+  const total = cents(total_(group.days.map((d) => num(days?.[d]?.cash?.deposit))));
+  return { ...group, total };
+}
+const total_ = (values) => values.reduce((a, b) => a + b, 0);
+
+export function depositState(date, day, record, settings, today, group = null) {
   const amount = has(day?.cash?.deposit) ? cents(num(day.cash.deposit)) : null;
   if (!amount) return { state: 'none', amount };
-  const r = record || {};
+  const r = group ? { ...record, depositedOn: group.depositedOn, slip: group.slip, clearedOn: group.clearedOn, clearedAmount: group.clearedAmount } : record || {};
   if (r.clearedOn) {
-    const clearedAmount = has(r.clearedAmount) ? cents(num(r.clearedAmount)) : amount;
-    const difference = cents(clearedAmount - amount);
-    return { state: difference ? 'mismatch' : 'cleared', amount, clearedAmount, difference };
+    const expected = group ? group.total : amount;
+    const clearedAmount = has(r.clearedAmount) ? cents(num(r.clearedAmount)) : expected;
+    const difference = cents(clearedAmount - expected);
+    return { state: difference ? 'mismatch' : 'cleared', amount, clearedAmount, difference, group };
   }
   if (r.depositedOn) {
     const waiting = daysBetween(r.depositedOn, today);
-    return { state: waiting > num(settings.thresholds.clearDays) ? 'late' : 'transit', amount, waiting };
+    return { state: waiting > num(settings.thresholds.clearDays) ? 'late' : 'transit', amount, waiting, group };
   }
   const age = daysBetween(date, today);
   return { state: age > num(settings.thresholds.depositDays) ? 'overdue' : 'pending', amount, age };

@@ -101,3 +101,27 @@ export function withDefaults(saved) {
       : base.departments,
   };
 }
+
+// Bills most stations pay every month. "Add typical station bills" in Settings adds the ones
+// not listed yet, with the amount blank: a bill with no amount isn't counted until filled in.
+// Card processing isn't here: it's worked out from card sales (and PDI's statement charge).
+export const TYPICAL_BILLS = [
+  'Rent / mortgage',
+  'Payroll (wages)',
+  "Payroll taxes & workers' comp",
+  'Electric',
+  'Natural gas / heating',
+  'Water & sewer',
+  'Phone & internet',
+  'Trash removal',
+  'Insurance: liability & property',
+  'Insurance: tank pollution liability',
+  'POS / Verifone support',
+  'Tank testing & compliance',
+  'Security, alarm & cameras',
+  'Pest control',
+  'Accounting & bookkeeping',
+  'Bank fees',
+  'Loan payments',
+  'Property tax (monthly share)',
+];

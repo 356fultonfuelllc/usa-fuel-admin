@@ -1,6 +1,7 @@
 // USA Fuel & Mart admin dashboard: daily entry, daily reports, 10-day fuel reconciliation.
 
 import { store } from './store.js';
+import { TYPICAL_BILLS } from './defaults.js';
 import * as calc from './calc.js';
 import { makeSample, makeSampleExtras, SAMPLE_START_COSTS } from './sample.js';
 import {
@@ -1480,7 +1481,11 @@ function renderSettings() {
             <button class="btn btn--ghost btn--small" type="button" data-remove-bill="${i}" aria-label="Remove ${esc(e.label)}">Remove</button>
           </div>`).join('')}
         </div>
-        <button class="btn btn--ghost btn--small" type="button" data-add-bill>Add a bill</button>
+        <div class="button-row">
+          <button class="btn btn--ghost btn--small" type="button" data-add-bill>Add a bill</button>
+          <button class="btn btn--ghost btn--small" type="button" data-add-typical-bills>Add typical station bills</button>
+        </div>
+        ${draft.fixedExpenses.some((e) => e.label && (e.amount === '' || e.amount == null)) ? `<p class="muted">Bills without an amount aren't counted in profit until you fill them in. Remove any you don't have.</p>` : ''}
       </section>
 
       <section class="card">
@@ -1593,6 +1598,10 @@ function renderSettings() {
   view.querySelectorAll('[data-remove-dept]').forEach((b) => b.addEventListener('click', listChange(() => draft.departments.splice(Number(b.dataset.removeDept), 1))));
   view.querySelectorAll('[data-remove-map]').forEach((b) => b.addEventListener('click', listChange(() => draft.deptMap.splice(Number(b.dataset.removeMap), 1))));
   view.querySelector('[data-add-bill]').addEventListener('click', listChange(() => draft.fixedExpenses.push({ key: uid('bill'), label: '', amount: '' })));
+  view.querySelector('[data-add-typical-bills]').addEventListener('click', listChange(() => {
+    const have = new Set(draft.fixedExpenses.map((e) => e.label.trim().toLowerCase()));
+    for (const label of TYPICAL_BILLS) if (!have.has(label.toLowerCase())) draft.fixedExpenses.push({ key: `${uid('bill')}-${draft.fixedExpenses.length}`, label, amount: '' });
+  }));
   view.querySelectorAll('[data-remove-bill]').forEach((b) => b.addEventListener('click', listChange(() => draft.fixedExpenses.splice(Number(b.dataset.removeBill), 1))));
   view.querySelectorAll('[data-remove-pay]').forEach((b) => b.addEventListener('click', listChange(() => draft.paymentTypes.splice(Number(b.dataset.removePay), 1))));
   // Keep the two blend shares adding up to 100 as either one is typed.

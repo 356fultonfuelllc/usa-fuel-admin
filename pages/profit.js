@@ -218,6 +218,8 @@ export function renderProfit(ctx, monthParam) {
   if (p.cardFees == null && p.cardSales) missing.push('your card processing rate');
   if (p.insideMissing.length) missing.push(`a margin % for ${p.insideMissing.map((g) => g.label).join(', ')}`);
   if (p.lotteryProfit == null && p.lotterySales) missing.push('the lottery commission %');
+  const unpricedBills = (settings.fixedExpenses || []).filter((e) => e.label && (e.amount === '' || e.amount == null));
+  if (unpricedBills.length) missing.push(`amounts for ${unpricedBills.length} monthly bill${unpricedBills.length === 1 ? '' : 's'} (${unpricedBills.slice(0, 3).map((e) => e.label).join(', ')}${unpricedBills.length > 3 ? '…' : ''})`);
 
   ctx.view.innerHTML = `
     ${ctx.banner()}

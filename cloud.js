@@ -121,6 +121,10 @@ export const cloudStore = {
   async latestSnapshot() {
     return check(await db.from('cmdr_live_snapshots').select('id, taken_at, request_id, data').order('taken_at', { ascending: false }).limit(1).maybeSingle());
   },
+  // Just the tank readings from the live snapshots between two times, oldest first.
+  async liveTanks(fromIso, toIso) {
+    return check(await db.from('cmdr_live_snapshots').select('taken_at, tanks:data->tanks').gte('taken_at', fromIso).lte('taken_at', toIso).order('taken_at'));
+  },
   // The snapshot taken closest before `iso` (within `minutes`), e.g. the same time last week.
   async snapshotBefore(iso, minutes = 45) {
     const earliest = new Date(new Date(iso).getTime() - minutes * 60000).toISOString();

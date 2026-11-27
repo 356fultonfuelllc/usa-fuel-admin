@@ -307,10 +307,12 @@ export function deliveriesOf(reading) {
   return [];
 }
 
-// Gallons a delivery put in the tank: the invoice gallons when entered, otherwise what the
-// tank monitor (TLS) measured.
+// Gallons a delivery put in the tank: the invoice gallons when entered; otherwise the tracked
+// gallons (the tank monitor's rise plus fuel sold while the truck unloaded); otherwise what
+// the tank monitor (TLS) measured.
 export function deliveredGallons(d) {
   if (has(d?.invoiceGallons)) return num(d.invoiceGallons);
+  if (has(d?.tracked?.gallons)) return num(d.tracked.gallons);
   if (has(d?.measured)) return num(d.measured);
   return 0;
 }

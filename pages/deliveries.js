@@ -14,17 +14,23 @@ function nextMonth(month) {
 
 const clean = (v) => String(v ?? '').trim();
 
-// The tank monitor's time for a delivery, from that day's Commander data.
-function tlsTime(ctx, date, tank, index) {
+// When a delivery finished, from that day's Commander data. The tank monitor keeps its own
+// clock; when tracking found it fast or slow (`clockFast` minutes), the time is corrected.
+function deliveryTime(ctx, date, tank, index, clockFast = 0) {
   const code = Object.keys(commander.TANK_ROLES).find((k) => commander.TANK_ROLES[k] === tank.role);
   const list = (ctx.cmdr?.days?.[date]?.data?.deliveries || []).filter((x) => x.tank === code);
   const time = list[index]?.time;
-  if (!time) return '';
-  const match = String(time).match(/(\d{1,2}):(\d{2})/);
+  const match = time ? String(time).match(/T(\d{2}):(\d{2})/) : null;
   if (!match) return '';
-  const h = Number(match[1]);
-  return `${h % 12 || 12}:${match[2]} ${h < 12 ? 'AM' : 'PM'}`;
+  const minutes = (Number(match[1]) * 60 + Number(match[2]) - (clockFast || 0) + 1440) % 1440;
+  const h = Math.floor(minutes / 60);
+  return `${h % 12 || 12}:${String(minutes % 60).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
 }
+
+const clockLabel = (at) => {
+  const [h, m] = at.slice(11, 16).split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')}`;
+};
 
 function statusPill(r) {
   switch (r.state) {
@@ -49,6 +55,8 @@ export function renderDeliveries(ctx, monthParam) {
   const olderUnpriced = commander.deliveries(days, settings, '0000-01-01', calc.addDays(start, -1)).rows.filter((r) => r.state === 'no-price');
   const tankOptions = settings.tanks.map((t) => [t.key, t.product]);
   const name = (r, key) => `d.${r.date}.${r.tank.key}.${r.index}.${key}`;
+  const clockFast = rows.map((r) => r.track?.clockFast).find((v) => v);
+  const usual = (r) => r.tracked ?? r.measured;
 
   ctx.view.innerHTML = `
     ${ctx.banner()}
@@ -77,14 +85,16 @@ export function renderDeliveries(ctx, monthParam) {
         ${rows.length ? '<button class="btn btn--primary" type="submit">Save prices</button>' : ''}
       </div>
       ${rows.length ? `<div class="table-wrap"><table class="table deliveries-table">
-        <thead><tr><th>Date</th><th>Tank</th><th class="num">TLS gallons</th><th class="num">Invoice gallons</th><th class="num">Price / gal</th><th>Ticket / BOL #</th><th class="num">Cost</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Tank</th><th class="num">TLS gallons</th><th class="num">Tracked gallons</th><th class="num">Invoice gallons</th><th class="num">Price / gal</th><th>Ticket / BOL #</th><th class="num">Cost</th><th></th></tr></thead>
         <tbody>${rows.map((r) => {
-          const time = tlsTime(ctx, r.date, r.tank, r.index);
+          const time = deliveryTime(ctx, r.date, r.tank, r.index, r.track?.clockFast);
+          const span = r.tracked != null ? `${clockLabel(r.track.from)}–${clockLabel(r.track.to)} on the tank monitor's clock` : '';
           return `<tr data-row="${r.date}|${r.tank.key}|${r.index}">
             <td class="dl-date"><a class="link" href="#/report/${r.date}">${mediumDate(r.date)}</a>${time ? `<br><span class="muted">${time}</span>` : ''}</td>
             <td class="dl-tank">${esc(r.tank.product)}</td>
             <td class="num" data-label="TLS gallons">${r.measured == null ? '<span class="muted">—</span>' : fmt.number(r.measured)}</td>
-            <td class="num" data-label="Invoice gallons"><input class="cell-input" name="${name(r, 'invoiceGallons')}" type="number" inputmode="decimal" step="any" value="${r.invoice ?? ''}" placeholder="${r.measured == null ? '' : `${fmt.number(r.measured)} (TLS)`}" aria-label="Invoice gallons, ${esc(r.tank.product)} ${mediumDate(r.date)}"></td>
+            <td class="num" data-label="Tracked gallons"${span ? ` title="${esc(`Tank readings ${span}`)}"` : ''}>${r.tracked == null ? '<span class="muted">—</span>' : `<strong>${fmt.number(r.tracked)}</strong><br><span class="muted">+${fmt.number(Math.round(r.track.sold))} sold during it</span>`}</td>
+            <td class="num" data-label="Invoice gallons"><input class="cell-input" name="${name(r, 'invoiceGallons')}" type="number" inputmode="decimal" step="any" value="${r.invoice ?? ''}" placeholder="${usual(r) == null ? '' : `${fmt.number(usual(r))} (${r.tracked != null ? 'tracked' : 'TLS'})`}" aria-label="Invoice gallons, ${esc(r.tank.product)} ${mediumDate(r.date)}"></td>
             <td class="num" data-label="Price / gal"><span class="cell-money">$<input class="cell-input" name="${name(r, 'cost')}" type="number" inputmode="decimal" step="any" value="${r.cost ?? ''}" placeholder="0.0000" aria-label="Price per gallon, ${esc(r.tank.product)} ${mediumDate(r.date)}"></span></td>
             <td data-label="Ticket / BOL #"><input class="cell-input cell-input--text" name="${name(r, 'ticket')}" type="text" value="${esc(r.ticket)}" aria-label="Ticket number, ${esc(r.tank.product)} ${mediumDate(r.date)}"></td>
             <td class="num" data-label="Cost" data-total>${r.total == null ? '—' : fmt.money(r.total)}</td>
@@ -92,7 +102,7 @@ export function renderDeliveries(ctx, monthParam) {
           </tr>`;
         }).join('')}</tbody>
       </table></div>
-      <p class="muted">TLS gallons come from the tank monitor's delivery report. Leave invoice gallons blank to use them; enter the invoice gallons from the bill of lading when you have it and the dashboard flags a delivery that came in more than ${fmt.number(ledger.tolerance)} gal short. Price per gallon is your landed cost (fuel, taxes and freight). It sets the tanks' average cost, which daily reports, Monthly profit, Trends and the accountant export use for fuel profit.</p>`
+      <p class="muted">TLS gallons are the tank monitor's delivery report: how much the tank rose. Fuel sold while the truck was unloading doesn't show in that, so <strong>tracked gallons</strong> take the tank reading just before the delivery and just after it (the store PC reads the tanks every 15 minutes) and add back what was pumped in between. Tracked gallons are used when invoice gallons are blank, and the TLS gallons when a delivery couldn't be tracked (before 11/24, or the store PC was offline). Enter the invoice gallons from the bill of lading when you have them and the dashboard flags a delivery that came in more than ${fmt.number(ledger.tolerance)} gal short.${clockFast ? ` The tank monitor's clock is ${Math.abs(clockFast) === 60 ? 'an hour' : `${Math.abs(clockFast)} minutes`} ${clockFast > 0 ? 'fast' : 'slow'}${Math.abs(clockFast) === 60 ? ' (it looks like it never changed back from daylight saving time)' : ''}; the times shown here are corrected.` : ''} Price per gallon is your landed cost (fuel, taxes and freight). It sets the tanks' average cost, which daily reports, Monthly profit, Trends and the accountant export use for fuel profit.</p>`
       : `<p class="empty">No deliveries in ${monthLabel(month)} yet. They appear here the morning after the tank monitor records them, once the day is imported from the Commander.</p>`}
     </form>
 
@@ -122,7 +132,7 @@ export function renderDeliveries(ctx, monthParam) {
     const r = rows.find((x) => x.date === date && x.tank.key === tankKey && String(x.index) === index);
     const invoice = tr.querySelector('[name$=".invoiceGallons"]').value;
     const price = tr.querySelector('[name$=".cost"]').value;
-    const gal = clean(invoice) !== '' ? Number(invoice) : r.measured;
+    const gal = clean(invoice) !== '' ? Number(invoice) : usual(r);
     tr.querySelector('[data-total]').textContent = clean(price) !== '' && gal != null && Number.isFinite(Number(price)) ? fmt.money(gal * Number(price)) : '—';
   });
 

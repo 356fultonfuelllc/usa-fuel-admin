@@ -286,6 +286,46 @@ export function liveTanks(snapshot, settings, maxAgeHours = 3) {
   return out;
 }
 
+// What a delivery really put in the tank, from the store PC's 15-minute tank readings.
+// The tank monitor's delivery report is how much the tank rose, so fuel sold while the truck
+// unloaded is missing from it. Take the last reading before the tank started rising and the
+// first one after it stopped: delivered = volume after - volume before + gallons pumped from
+// that tank in between. Both ends use the tank monitor's own clock, so a wrong TLS clock
+// doesn't matter. `snapshots` are { taken_at, tanks } rows, oldest first.
+export function trackDelivery(snapshots, tankCode, time, measured) {
+  const points = [];
+  for (const s of snapshots || []) {
+    const t = s.tanks?.[tankCode];
+    const at = t?.tls?.time ? String(t.tls.time).slice(0, 16) : null;
+    if (!at || t.tls.volume == null || t.pumped == null) continue;
+    if (points.length && points.at(-1).at === at) continue; // same reading pulled twice
+    points.push({ at, iso: t.tls.time, takenAt: s.taken_at, volume: Number(t.tls.volume), pumped: Number(t.pumped) });
+  }
+  const when = String(time || '').slice(0, 16);
+  const end = points.findIndex((p) => p.at >= when);
+  if (!when || end < 2) return null;
+  const NOISE = 15; // gallons a reading can wander without a delivery
+  const rise = (i) => points[i].volume - points[i - 1].volume + (points[i].pumped - points[i - 1].pumped);
+  // The delivery is stamped when it ended; the last rise is at that reading or just before.
+  let i = end;
+  for (let back = 0; back < 2 && i > 1 && rise(i) <= NOISE; back += 1) i -= 1;
+  if (rise(i) <= NOISE) return null;
+  let first = i;
+  while (first >= 2 && rise(first - 1) > NOISE) first -= 1;
+  if (first < 2) return null; // the rise starts before the readings do
+  let last = i;
+  while (last + 1 < points.length && rise(last + 1) > NOISE) last += 1;
+  const before = points[first - 1];
+  const after = points[last];
+  const sold = after.pumped - before.pumped;
+  if (sold < 0) return null; // the register's period closed in between
+  const gallons = after.volume - before.volume + sold;
+  // Far from the tank monitor's own figure means two deliveries or a bad reading: don't guess.
+  if (Number.isFinite(measured) && measured > 0 && Math.abs(gallons - measured) > Math.max(300, measured * 0.1)) return null;
+  const clockFast = Math.round((Date.parse(after.iso) - Date.parse(after.takenAt)) / 60000 / 15) * 15;
+  return { gallons: Math.round(gallons), sold: Math.round(sold * 10) / 10, from: before.at, to: after.at, clockFast };
+}
+
 // Every delivery in a date range: invoice gallons against what the tank monitor measured.
 // Short = the tank went up by more than the tolerance less than the invoice says.
 // No-price = no price per gallon yet, so it can't count toward fuel cost.
@@ -299,16 +339,20 @@ export function deliveries(days, settings, from, to) {
         const invoice = d.invoiceGallons === '' || d.invoiceGallons == null ? null : Number(d.invoiceGallons);
         const measured = d.measured === '' || d.measured == null ? null : Number(d.measured);
         const cost = d.cost === '' || d.cost == null ? null : Number(d.cost);
-        const diff = invoice != null && measured != null ? measured - invoice : null;
+        const tracked = d.tracked?.gallons ?? null;
+        // Compare the invoice with the tracked gallons when known: the TLS figure alone runs
+        // short by whatever sold during the delivery.
+        const actual = tracked ?? measured;
+        const diff = invoice != null && actual != null ? actual - invoice : null;
         // Gallons used everywhere: the invoice when entered, otherwise the TLS measured gallons.
         const gallons = calc.deliveredGallons(d);
         let state = 'ok';
-        if (invoice != null && measured != null && invoice - measured > tolerance) state = 'short';
+        if (invoice != null && actual != null && invoice - actual > tolerance) state = 'short';
         else if (cost == null) state = 'no-price';
-        else if (measured == null) state = 'no-tls';
-        const shortGallons = state === 'short' ? invoice - measured : 0;
+        else if (actual == null) state = 'no-tls';
+        const shortGallons = state === 'short' ? invoice - actual : 0;
         rows.push({
-          date, tank, index: i, ticket: d.ticket || '', invoice, measured, gallons, diff, cost, state,
+          date, tank, index: i, ticket: d.ticket || '', invoice, measured, tracked, track: d.tracked || null, gallons, diff, cost, state,
           total: cost != null ? gallons * cost : null,
           shortGallons, shortValue: shortGallons && cost != null ? shortGallons * cost : null,
         });

@@ -1247,7 +1247,7 @@ function renderReport(date) {
           <div class="table-wrap"><table class="table table--report">
             <thead><tr><th>Tank</th><th>Time</th><th class="num">Start</th><th class="num">+ Delivered</th><th class="num">− Pumped</th><th class="num">= Book</th><th class="num">End (in)</th><th class="num">End (gal)</th><th class="num">Over/short</th><th class="num">10-day</th><th class="num">Water (in)</th></tr></thead>
             <tbody>${lines.map(([tank, l, run]) => `<tr>
-              <td>${esc(tank.product)}${l.deliveries.length ? `<br><span class="muted">${l.deliveries.map((d) => { const invoiced = d.invoiceGallons !== '' && d.invoiceGallons != null; return `${d.ticket ? `#${esc(d.ticket)} ` : ''}${fmt.number(Math.round(calc.deliveredGallons(d)))} gal${invoiced ? (d.measured !== '' && d.measured != null ? ` (TLS ${fmt.number(Number(d.measured))})` : '') : ' (TLS)'}${d.cost ? ` @ $${Number(d.cost).toFixed(4)}` : ' · no price yet'}`; }).join('; ')}</span>` : ''}</td>
+              <td>${esc(tank.product)}${l.deliveries.length ? `<br><span class="muted">${l.deliveries.map((d) => { const invoiced = d.invoiceGallons !== '' && d.invoiceGallons != null; const hasTls = d.measured !== '' && d.measured != null; const tracked = d.tracked?.gallons != null; const source = invoiced ? (tracked ? ` (tracked ${fmt.number(d.tracked.gallons)})` : hasTls ? ` (TLS ${fmt.number(Number(d.measured))})` : '') : tracked ? ` (TLS ${hasTls ? fmt.number(Number(d.measured)) : '—'} + ${fmt.number(Math.round(d.tracked.sold))} sold during the delivery)` : ' (TLS)'; return `${d.ticket ? `#${esc(d.ticket)} ` : ''}${fmt.number(Math.round(calc.deliveredGallons(d)))} gal${source}${d.cost ? ` @ $${Number(d.cost).toFixed(4)}` : ' · no price yet'}`; }).join('; ')}</span>` : ''}</td>
               <td>${esc(l.time) || '—'}</td>
               <td class="num">${fmt.number(l.start)}</td>
               <td class="num">${fmt.number(l.delivered)}</td>
@@ -1758,6 +1758,48 @@ async function loadCommander() {
   }
   await createDrafts();
   await fillTankHeights();
+  await trackDeliveries();
+}
+
+// Deliveries: work out what each one really put in the tank from the tank readings around
+// it (see commander.trackDelivery) and keep the result on the delivery line. Each delivery
+// is looked at once, after the readings that follow it are in; owner fields aren't changed.
+async function trackDeliveries() {
+  if (!allowDraftWrites || !store.liveTanks) return;
+  const since = calc.addDays(calc.todayInNewYork(), -45);
+  for (const date of Object.keys(days).filter((d) => d >= since && cmdr.days[d]).sort()) {
+    const tls = cmdr.days[date].data?.deliveries || [];
+    if (!tls.length) continue;
+    const updated = structuredClone(days[date]);
+    let changed = false;
+    for (const tank of settings.tanks) {
+      const code = Object.keys(commander.TANK_ROLES).find((k) => commander.TANK_ROLES[k] === tank.role);
+      const lines = updated.tanks?.[tank.key]?.deliveries;
+      if (!Array.isArray(lines)) continue;
+      const list = tls.filter((x) => x.tank === code);
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        const x = list[i];
+        if (!line || line.tracked !== undefined || !x?.time || Number.isNaN(Date.parse(x.time))) continue;
+        const t = Date.parse(x.time);
+        if (t + 3 * 3600000 > Date.now()) continue; // wait for the readings after it
+        try {
+          const rows = await store.liveTanks(new Date(t - 5 * 3600000).toISOString(), new Date(t + 2 * 3600000).toISOString());
+          line.tracked = commander.trackDelivery(rows, code, x.time, Number(line.measured)) || { gallons: null };
+          changed = true;
+        } catch (err) {
+          console.warn(`Delivery on ${date} not tracked:`, err.message);
+        }
+      }
+    }
+    if (!changed) continue;
+    try {
+      await store.saveDay(updated);
+      days[date] = updated;
+    } catch (err) {
+      console.warn(`Tracked deliveries for ${date} not saved:`, err.message);
+    }
+  }
 }
 
 // Saved days: fill a blank end height (inches) from the tank monitor when the saved end

@@ -456,6 +456,22 @@ img { display: block; max-width: 100%; }
 .inspection__table td { vertical-align: top; }
 .inspection__table td:first-child { width: 28px; color: var(--muted); }
 .inspection__result { white-space: nowrap; }
+.cell-input { width: 7.5em; height: 34px; padding: 0 8px; border: 1.5px solid #cdd5e4; border-radius: 7px; font: inherit; font-size: .9rem; text-align: right; }
+.cell-input--text { width: 9em; text-align: left; }
+.cell-input:focus { border-color: var(--navy); outline: none; }
+.cell-money { display: inline-flex; align-items: center; gap: 3px; }
+.deliveries-table td { vertical-align: middle; }
+@media (max-width: 699.98px) {
+  .deliveries-table thead { display: none; }
+  .deliveries-table, .deliveries-table tbody { display: block; }
+  .deliveries-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .deliveries-table td, .deliveries-table td.num { display: block; padding: 0; border: 0; text-align: left; }
+  .deliveries-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+  .deliveries-table .dl-date { font-weight: 700; }
+  .deliveries-table .dl-status { grid-column: 1 / -1; }
+  .deliveries-table .cell-input { width: 100%; text-align: left; }
+  .deliveries-table .cell-money { display: flex; }
+}
 .inspection__note { width: 100%; min-width: 140px; height: 34px; padding: 0 8px; border: 1.5px solid #cdd5e4; border-radius: 7px; font: inherit; font-size: .9rem; }
 .seg { display: inline-flex; margin-right: 4px; cursor: pointer; }
 .seg input { position: absolute; opacity: 0; pointer-events: none; }

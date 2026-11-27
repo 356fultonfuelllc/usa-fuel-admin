@@ -307,8 +307,17 @@ export function deliveriesOf(reading) {
   return [];
 }
 
+// Gallons a delivery put in the tank: the invoice gallons when entered, otherwise what the
+// tank monitor (TLS) measured.
+export function deliveredGallons(d) {
+  if (has(d?.invoiceGallons)) return num(d.invoiceGallons);
+  if (has(d?.measured)) return num(d.measured);
+  return 0;
+}
+
 // One tank's line for one day: start + delivered - pumped = book; end - book = over/short.
-// Start defaults to the previous day's ending inventory. Delivered is invoice gallons.
+// Start defaults to the previous day's ending inventory. Delivered is invoice gallons, or the
+// TLS measured gallons for a delivery without an invoice yet.
 export function tankLine(date, tank, days, settings) {
   const day = days[date];
   const reading = day?.tanks?.[tank.key] || {};
@@ -320,7 +329,7 @@ export function tankLine(date, tank, days, settings) {
   else if (previousEnd != null) start = previousEnd;
 
   const deliveries = deliveriesOf(reading);
-  const delivered = Math.round(total(deliveries.map((d) => num(d.invoiceGallons))));
+  const delivered = Math.round(total(deliveries.map(deliveredGallons)));
   const pumped = day ? (has(reading.pumped) ? Math.round(num(reading.pumped)) : pumpedFromSales(day, tank, settings)) : null;
   const end = endVolume(reading, settings);
   const book = start == null || pumped == null ? null : start + delivered - pumped;
@@ -428,7 +437,8 @@ export function nowInNewYork() {
 // ---- Fuel cost and margin ----
 
 // Average cost per gallon of the fuel in each tank at the end of each day. A delivery
-// blends its invoice cost with the fuel already in the tank, weighted by gallons.
+// blends its price per gallon with the fuel already in the tank, weighted by gallons (invoice
+// gallons, or the TLS measured gallons when there's no invoice).
 export function tankCosts(days, settings) {
   const average = Object.fromEntries(settings.tanks.map((t) => [t.key, has(t.startCost) ? num(t.startCost) : null]));
   const byDate = {};
@@ -437,7 +447,7 @@ export function tankCosts(days, settings) {
       const deliveries = deliveriesOf(days[date].tanks?.[tank.key]);
       let volume = null;
       for (const d of deliveries) {
-        const gallons = num(d.invoiceGallons);
+        const gallons = deliveredGallons(d);
         if (gallons <= 0 || !has(d.cost)) continue;
         if (volume == null) volume = tankLine(date, tank, days, settings).start || 0;
         const current = average[tank.key];

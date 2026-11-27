@@ -14,7 +14,7 @@ const CATEGORY_LABELS = {
 };
 const CATEGORY_FALLBACK_KEYS = { cold: 'drinks', bottle: 'bottleDeposits' };
 
-export const OWNER_FIELDS = ['invoice gallons, landed cost and ticket # for deliveries', 'cash counted', 'bank deposit', 'pay outs', 'prepared by'];
+export const OWNER_FIELDS = ['the price per gallon for deliveries (Fuel deliveries page)', 'cash counted', 'bank deposit', 'pay outs', 'prepared by'];
 
 const str = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? '' : String(Math.round(Number(v) * 1000) / 1000));
 
@@ -116,7 +116,7 @@ export function applyToDraft(draft, cmdr, settings) {
     if (reading.start === '' && t.start != null) reading.start = str(t.start);
     reading.deliveries = (d.deliveries || []).filter((x) => x.tank === code).map((x) => ({ invoiceGallons: '', measured: str(x.tls_gallons), cost: '', ticket: '' }));
     for (const x of (d.deliveries || []).filter((y) => y.tank === code)) {
-      flags.push(`${tank.product} delivery of ${fmt.number(x.tls_gallons)} gal at ${timeLabel(x.time)}: add invoice gallons, landed cost and ticket #.`);
+      flags.push(`${tank.product} delivery of ${fmt.number(x.tls_gallons)} gal at ${timeLabel(x.time)}: add the price per gallon on the Fuel deliveries page.`);
     }
   }
 
@@ -288,6 +288,7 @@ export function liveTanks(snapshot, settings, maxAgeHours = 3) {
 
 // Every delivery in a date range: invoice gallons against what the tank monitor measured.
 // Short = the tank went up by more than the tolerance less than the invoice says.
+// No-price = no price per gallon yet, so it can't count toward fuel cost.
 export function deliveries(days, settings, from, to) {
   const tolerance = Number(settings.thresholds?.tankDailyGallons ?? 25);
   const rows = [];
@@ -299,13 +300,16 @@ export function deliveries(days, settings, from, to) {
         const measured = d.measured === '' || d.measured == null ? null : Number(d.measured);
         const cost = d.cost === '' || d.cost == null ? null : Number(d.cost);
         const diff = invoice != null && measured != null ? measured - invoice : null;
+        // Gallons used everywhere: the invoice when entered, otherwise the TLS measured gallons.
+        const gallons = calc.deliveredGallons(d);
         let state = 'ok';
-        if (invoice == null && measured != null) state = 'no-invoice';
+        if (invoice != null && measured != null && invoice - measured > tolerance) state = 'short';
+        else if (cost == null) state = 'no-price';
         else if (measured == null) state = 'no-tls';
-        else if (invoice - measured > tolerance) state = 'short';
         const shortGallons = state === 'short' ? invoice - measured : 0;
         rows.push({
-          date, tank, index: i, ticket: d.ticket || '', invoice, measured, diff, cost, state,
+          date, tank, index: i, ticket: d.ticket || '', invoice, measured, gallons, diff, cost, state,
+          total: cost != null ? gallons * cost : null,
           shortGallons, shortValue: shortGallons && cost != null ? shortGallons * cost : null,
         });
       });

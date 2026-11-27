@@ -9,6 +9,7 @@ import {
   pill, toast, field, selectField, attempt, statTile, deltaLine, setPrintTitle,
 } from './ui.js';
 import { renderFuel } from './pages/fuel.js';
+import { renderDeliveries } from './pages/deliveries.js';
 import { renderDeposits } from './pages/deposits.js';
 import { renderAccounts, renderAccount, renderStatement } from './pages/accounts.js';
 import { renderWebsite } from './pages/website.js';
@@ -81,6 +82,7 @@ const routes = [
   [/^#\/recon$/, renderReconList, 'recon'],
   [/^#\/recon\/(\d{4}-\d{2}-\d{2})$/, renderWorksheets, 'recon'],
   [/^#\/fuel(?:\/(\d{4}-\d{2}))?$/, (month) => renderFuel(ctx, month), 'fuel'],
+  [/^#\/deliveries(?:\/(\d{4}-\d{2}))?$/, (month) => renderDeliveries(ctx, month), 'deliveries'],
   [/^#\/deposits(?:\/(\d{4}-\d{2}))?$/, (month) => renderDeposits(ctx, month), 'deposits'],
   [/^#\/accounts$/, () => renderAccounts(ctx), 'accounts'],
   [/^#\/account\/([\w-]+)(?:\/(\d{4}-\d{2}))?$/, (id, month) => renderAccount(ctx, id, month), 'accounts'],
@@ -118,6 +120,11 @@ const ctx = {
   async removeRecord(collection, id) {
     if (!(await attempt(() => store.remove(collection, id), "Couldn't delete that."))) return false;
     extra[collection] = extra[collection].filter((r) => r.id !== id);
+    return true;
+  },
+  async saveDay(day) {
+    if (!(await attempt(() => store.saveDay(day), "Couldn't save. Nothing was lost on screen; try again."))) return false;
+    days[day.date] = structuredClone(day);
     return true;
   },
   async saveContent(key, data) {
@@ -315,10 +322,10 @@ function attentionItems(today) {
   // Deliveries in the last 30 days: short loads and loads still missing the invoice.
   const recentDeliveries = commander.deliveries(days, settings, calc.addDays(today, -30), today).rows;
   for (const d of recentDeliveries.filter((x) => x.state === 'short')) {
-    items.push(['bad', `${d.tank.product} delivery on ${mediumDate(d.date)}${d.ticket ? ` (#${d.ticket})` : ''} came in ${fmt.number(Math.round(d.shortGallons))} gal short of the invoice${d.shortValue != null ? ` (about ${usd.format(d.shortValue)})` : ''}.`, '#/fuel', 'Deliveries']);
+    items.push(['bad', `${d.tank.product} delivery on ${mediumDate(d.date)}${d.ticket ? ` (#${d.ticket})` : ''} came in ${fmt.number(Math.round(d.shortGallons))} gal short of the invoice${d.shortValue != null ? ` (about ${usd.format(d.shortValue)})` : ''}.`, '#/deliveries', 'Fuel deliveries']);
   }
-  const noInvoice = recentDeliveries.filter((x) => x.state === 'no-invoice');
-  if (noInvoice.length) items.push(['warn', `${noInvoice.length} deliver${noInvoice.length === 1 ? 'y needs' : 'ies need'} invoice gallons and cost (${noInvoice.slice(0, 3).map((x) => `${x.tank.product.split(' ')[0].toLowerCase()} ${shortDate(x.date)}`).join(', ')}${noInvoice.length > 3 ? '…' : ''}).`, '#/fuel', 'Deliveries']);
+  const noPrice = recentDeliveries.filter((x) => x.state === 'no-price');
+  if (noPrice.length) items.push(['warn', `${noPrice.length} deliver${noPrice.length === 1 ? 'y needs' : 'ies need'} a price per gallon (${noPrice.slice(0, 3).map((x) => `${x.tank.product.split(' ')[0].toLowerCase()} ${shortDate(x.date)}`).join(', ')}${noPrice.length > 3 ? '…' : ''}).`, '#/deliveries', 'Fuel deliveries']);
 
   // Tank monitor: water in a tank now, and alarms in the last 30 days.
   for (const tank of settings.tanks) {
@@ -558,9 +565,9 @@ function deliveryRows(tank, deliveries) {
   return deliveries.map((d, i) => `<div class="delivery" data-delivery="${i}">
     <p class="delivery__title">Delivery ${i + 1}</p>
     <div class="fields fields--tank">
-      ${field({ name: `${base}.${i}.invoiceGallons`, label: 'Invoice gallons', suffix: 'gal', value: d.invoiceGallons })}
+      ${field({ name: `${base}.${i}.invoiceGallons`, label: 'Invoice gallons', suffix: 'gal', value: d.invoiceGallons, hint: 'Blank = TLS measured' })}
       ${field({ name: `${base}.${i}.measured`, label: 'TLS measured increase', suffix: 'gal', value: d.measured, hint: 'TLS-350 delivery report' })}
-      ${field({ name: `${base}.${i}.cost`, label: 'Landed cost / gal', prefix: '$', value: d.cost, hint: 'Incl. taxes and freight' })}
+      ${field({ name: `${base}.${i}.cost`, label: 'Price / gal', prefix: '$', value: d.cost, hint: 'Landed: incl. taxes and freight' })}
       ${field({ name: `${base}.${i}.ticket`, label: 'Ticket / BOL #', type: 'text', value: d.ticket })}
     </div>
     <button class="btn btn--ghost btn--small" type="button" data-remove-delivery="${tank.key}:${i}">Remove delivery</button>
@@ -1098,6 +1105,9 @@ function renderReport(date) {
   const priceText = (price) => (price ? `$${Number(price).toFixed(3)}` : '—');
   const lastWeek = days[calc.addDays(date, -7)] ? calc.summarizeDay(days[calc.addDays(date, -7)], settings) : null;
   const lines = settings.tanks.map((tank) => [tank, calc.tankLine(date, tank, days, settings), calc.tankRunning(date, tank, days, settings)]);
+  // Fuel profit at the tanks' average cost (set by the delivery prices on Fuel deliveries).
+  const margin = calc.dayMargin(day, calc.gradeCosts(calc.tankCosts(days, settings)[date], settings));
+  const gradeMargin = (key) => margin.grades.find((g) => g.key === key) || {};
   const checks = calc.dayChecks(date, days, settings, { houseCharges: calc.houseChargesOn(date, extra.house_charges) });
   const dates = sortedDates();
   const index = dates.indexOf(date);
@@ -1143,13 +1153,14 @@ function renderReport(date) {
         <section class="report-grid__fuel">
           <h2>Fuel sales</h2>
           <table class="table table--report">
-            <thead><tr><th>Grade</th><th class="num">Gallons</th><th class="num">Sales</th><th class="num">Avg $/gal</th><th class="num">Cash</th><th class="num">Credit</th></tr></thead>
-            <tbody>${s.fuel.map((f) => `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td><td class="num">${priceText(prices.cash[f.key])}</td><td class="num">${priceText(prices.credit[f.key])}</td></tr>`).join('')}
-              ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td colspan="3"></td></tr>` : ''}</tbody>
-            <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th colspan="3"></th></tr>
-              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td colspan="3"></td></tr>` : ''}
-              ${calc.personalFuel(day).rows.map((p) => `<tr><td>Personal: ${esc(calc.GRADES.find((g) => g.key === p.grade).label)}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''} <span class="muted">· ${esc(calc.PERSONAL_MODES.find(([k]) => k === calc.personalMode(p))[1].toLowerCase())}</span></td><td class="num">${fmt.number(Number(p.gallons), 3)}</td><td class="num">${calc.personalMode(p) === 'off' ? '—' : fmt.money(Number(p.amount) || 0)}</td><td></td></tr>`).join('')}</tfoot>
+            <thead><tr><th>Grade</th><th class="num">Gallons</th><th class="num">Sales</th><th class="num">Avg $/gal</th><th class="num">Cash</th><th class="num">Credit</th><th class="num">Cost/gal</th><th class="num">Profit</th></tr></thead>
+            <tbody>${s.fuel.map((f) => { const g = gradeMargin(f.key); return `<tr><td>${f.label}</td><td class="num">${fmt.number(f.gallons, 3)}</td><td class="num">${fmt.money(f.amount)}</td><td class="num">${f.perGallon ? `$${f.perGallon.toFixed(3)}` : '—'}</td><td class="num">${priceText(prices.cash[f.key])}</td><td class="num">${priceText(prices.credit[f.key])}</td><td class="num">${g.cost == null ? '—' : fmt.ppg(g.cost)}</td><td class="num">${g.profit == null ? '—' : fmt.money(g.profit)}</td></tr>`; }).join('')}
+              ${s.manualFuel ? `<tr><td>Manual fuel</td><td class="num"></td><td class="num">${fmt.money(s.manualFuel)}</td><td colspan="5"></td></tr>` : ''}</tbody>
+            <tfoot><tr><th>Total</th><th class="num">${fmt.number(s.fuelGallons, 3)}</th><th class="num">${fmt.money(s.fuelAmount)}</th><th colspan="3"></th><th class="num">${margin.perGallon == null ? '' : `${fmt.cents(margin.perGallon)}/gal`}</th><th class="num">${margin.profit != null ? `${fmt.money(margin.profit)}${margin.complete ? '' : '*'}` : '—'}</th></tr>
+              ${s.driveOffAmount || s.driveOffGallons ? `<tr><td>Drive-offs</td><td class="num">${fmt.number(s.driveOffGallons, 3)}</td><td class="num">${fmt.money(s.driveOffAmount)}</td><td colspan="5"></td></tr>` : ''}
+              ${calc.personalFuel(day).rows.map((p) => `<tr><td>Personal: ${esc(calc.GRADES.find((g) => g.key === p.grade).label)}${p.note ? ` <span class="muted">(${esc(p.note)})</span>` : ''} <span class="muted">· ${esc(calc.PERSONAL_MODES.find(([k]) => k === calc.personalMode(p))[1].toLowerCase())}</span></td><td class="num">${fmt.number(Number(p.gallons), 3)}</td><td class="num">${calc.personalMode(p) === 'off' ? '—' : fmt.money(Number(p.amount) || 0)}</td><td colspan="5"></td></tr>`).join('')}</tfoot>
           </table>
+          ${!margin.complete ? `<p class="muted no-print">${margin.profit != null ? '* Partial: ' : ''}a grade has no fuel cost yet. Enter delivery prices on <a href="#/deliveries/${date.slice(0, 7)}">Fuel deliveries</a>, or a starting cost per tank in Settings.</p>` : ''}
         </section>
 
         <section>
@@ -1236,7 +1247,7 @@ function renderReport(date) {
           <div class="table-wrap"><table class="table table--report">
             <thead><tr><th>Tank</th><th>Time</th><th class="num">Start</th><th class="num">+ Delivered</th><th class="num">− Pumped</th><th class="num">= Book</th><th class="num">End (in)</th><th class="num">End (gal)</th><th class="num">Over/short</th><th class="num">10-day</th><th class="num">Water (in)</th></tr></thead>
             <tbody>${lines.map(([tank, l, run]) => `<tr>
-              <td>${esc(tank.product)}${l.deliveries.length ? `<br><span class="muted">${l.deliveries.map((d) => `${d.ticket ? `#${esc(d.ticket)} ` : ''}${fmt.number(Number(d.invoiceGallons) || 0)} gal${d.measured !== '' && d.measured != null ? ` (TLS ${fmt.number(Number(d.measured))})` : ''}${d.cost ? ` @ $${Number(d.cost).toFixed(4)}` : ''}`).join('; ')}</span>` : ''}</td>
+              <td>${esc(tank.product)}${l.deliveries.length ? `<br><span class="muted">${l.deliveries.map((d) => { const invoiced = d.invoiceGallons !== '' && d.invoiceGallons != null; return `${d.ticket ? `#${esc(d.ticket)} ` : ''}${fmt.number(Math.round(calc.deliveredGallons(d)))} gal${invoiced ? (d.measured !== '' && d.measured != null ? ` (TLS ${fmt.number(Number(d.measured))})` : '') : ' (TLS)'}${d.cost ? ` @ $${Number(d.cost).toFixed(4)}` : ' · no price yet'}`; }).join('; ')}</span>` : ''}</td>
               <td>${esc(l.time) || '—'}</td>
               <td class="num">${fmt.number(l.start)}</td>
               <td class="num">${fmt.number(l.delivered)}</td>

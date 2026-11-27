@@ -78,7 +78,7 @@ export function renderFuel(ctx, monthParam) {
   const clock = (iso) => new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
   const deliveryPill = (r) => ({
     short: pill('bad', `Short ${fmt.number(Math.round(r.shortGallons))} gal`),
-    'no-invoice': pill('warn', 'Needs invoice'),
+    'no-price': pill('warn', 'Needs price'),
     'no-tls': pill('idle', 'No TLS reading'),
     ok: pill('good', 'OK'),
   }[r.state]);
@@ -170,7 +170,7 @@ export function renderFuel(ctx, monthParam) {
 
     <section class="card">
       <div class="card__head">
-        <h2 class="card__title">Deliveries · ${monthLabel(month)}</h2>
+        <h2 class="card__title">Deliveries · ${monthLabel(month)} <a class="link" href="#/deliveries/${month}">Enter prices</a></h2>
         <span class="muted">${shortRows.length ? `${shortRows.length} short · ${fmt.number(Math.round(shortRows.reduce((a, r) => a + r.shortGallons, 0)))} gal${shortRows.some((r) => r.shortValue != null) ? ` · about ${fmt.money(shortRows.reduce((a, r) => a + (r.shortValue || 0), 0))}` : ''}` : `${ledger.rows.length} deliver${ledger.rows.length === 1 ? 'y' : 'ies'}`}</span>
       </div>
       ${ledger.rows.length ? `<div class="table-wrap"><table class="table">

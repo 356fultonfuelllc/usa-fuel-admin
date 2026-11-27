@@ -392,6 +392,8 @@ function renderHome() {
   const dates = sortedDates();
   const latest = dates.at(-1);
   const todaysDay = days[today];
+  const yesterday = calc.addDays(today, -1);
+  const yesterdaysDay = days[yesterday];
 
   let tiles = `<p class="empty">No days entered yet. <a href="#/day/${today}">Enter today's numbers</a>, or load sample data in <a href="#/settings">Settings</a> to look around.</p>`;
   if (latest) {
@@ -422,6 +424,7 @@ function renderHome() {
     <header class="page-head">
       <div><p class="eyebrow">Overview</p><h1>${longDate(today)}</h1></div>
       <div class="page-head__actions">
+        ${yesterdaysDay ? `<a class="btn btn--ghost" href="#/report/${yesterday}">Yesterday's report${yesterdaysDay.import?.status === 'needs_review' ? ' (needs review)' : ''}</a>` : ''}
         ${todaysDay ? `<a class="btn btn--ghost" href="#/report/${today}">Today's report</a>` : ''}
         <a class="btn btn--primary" href="#/day/${today}">${todaysDay ? 'Edit today' : "Enter today's numbers"}</a>
       </div>
